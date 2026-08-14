@@ -1,0 +1,3 @@
+- insert:
+    - id: automode-guardrail
+      name: '<checkout>/automode-guardrail/src/index.ts'
