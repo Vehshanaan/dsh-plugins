@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Pure types of the auto-safety guardrail — no runtime code.
  * @module automode-guardrail/types
  */
@@ -30,11 +30,24 @@ export interface GuardrailConfig {
   /** Extra read-only tool names exempt from classification; the fixed read-only set and the hard rules always apply. */
   skip?: string[]
   /**
+   * Tool names whose `command` argument the hard rules and the read-only
+   * command fast path inspect (default `['bash', 'pwsh']`). Extend when
+   * another tool surfaces a shell command.
+   */
+  shellTools?: string[]
+  /**
    * Skip LLM classification for `write`/`edit` calls whose target resolves
    * inside the workspace root and is not a sensitive file name (default
    * `true`). Hard rules still apply.
    */
   workspaceWriteFastPath?: boolean
+  /**
+   * Skip LLM classification for single, purely read-only shell commands —
+   * metadata listings and status queries with no separators, pipes,
+   * redirections, substitutions, or sensitive targets (default `true`).
+   * Hard rules still apply.
+   */
+  readOnlyCommandFastPath?: boolean
   /** LLM classifier; omitted runs the rules-only mode. */
   classifier?: ClassifierConfig
 }
@@ -56,7 +69,10 @@ export interface ResolvedConfig {
   modes: readonly SandboxMode[]
   /** Fixed read-only tool names union the configured extras. */
   skip: ReadonlySet<string>
+  /** Tool names whose `command` argument the hard rules and the read-only command fast path inspect. */
+  shellTools: ReadonlySet<string>
   workspaceWriteFastPath: boolean
+  readOnlyCommandFastPath: boolean
   classifier?: ResolvedClassifierConfig
 }
 

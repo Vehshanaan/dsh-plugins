@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { CallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import type { ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -423,5 +424,152 @@ describe('apply', () => {
       classifier: { provider: 'p', model: 'm', maxInputBytes: 100, maxOutputTokens: 10, timeoutMs: 100 },
     }
     expect(() => Guardrail.apply(ctx, config)).toThrow('no llm service')
+  })
+})
+describe('shellTools', () => {
+  it('inspects only the configured shell tools', async () => {
+    const { ctx, agent } = await harness({ shellTools: ['sh'] })
+    ctx.tools.register(defineContentToolFixture({
+      name: 'sh',
+      description: 's',
+      parameters: { command: { type: 'string', description: 'shell command' } },
+      async execute() { return [{ type: 'text', text: 'executed' }] },
+    }))
+    const custom = await execute(ctx, agent, 'sh', { command: 'rm -rf /' })
+    expect(custom.isError).toBe(true)
+    expect(errorMessageOf(custom)).toContain('auto-safety guardrail denied sh')
+    const plain = await execute(ctx, agent, 'bash', { command: 'rm -rf /' })
+    expect(plain.isError).toBe(false)
+  })
+})
+
+describe('read-only command fast path', () => {
+  it('skips classification for metadata-only commands', async () => {
+    const { ctx, agent, adapter } = await harness(
+      { classifier: { provider: 'mock', model: 'mock' } },
+      'danger-full-access',
+      [],
+    )
+    const commands = [
+      'ls -la',
+      'dir',
+      'pwd',
+      'whoami',
+      'git status',
+      'git log --oneline -n 5',
+      'git diff --stat',
+      'Get-ChildItem -Recurse',
+      'Get-Location',
+      'Test-Path x',
+      'where code',
+    ]
+    for (const command of commands) {
+      const result = await execute(ctx, agent, 'bash', { command })
+      expect(result.isError, command).toBe(false)
+    }
+    expect(adapter.requests).toHaveLength(0)
+  })
+
+  it('classifies anything beyond one simple metadata command', async () => {
+    const { ctx, agent, adapter } = await harness(
+      { classifier: { provider: 'mock', model: 'mock' } },
+      'danger-full-access',
+      Array.from({ length: 7 }, () => textResponse('allow\nsafe\nfine')),
+    )
+    const commands = [
+      'ls; rm -rf /',
+      'ls | head',
+      'cat .env',
+      'Get-Content x',
+      'find . -name x',
+      'git branch -d old',
+      'ls $HOME',
+    ]
+    for (const command of commands) {
+      const result = await execute(ctx, agent, 'bash', { command })
+      expect(result.isError, command).toBe(false)
+    }
+    expect(adapter.requests).toHaveLength(7)
+  })
+
+  it('classifies read-only-looking commands that mention sensitive targets', async () => {
+    const { ctx, agent, adapter } = await harness(
+      { classifier: { provider: 'mock', model: 'mock' } },
+      'danger-full-access',
+      [textResponse('allow\nsafe\nfine')],
+    )
+    const result = await execute(ctx, agent, 'bash', { command: 'ls ~/.ssh' })
+    expect(result.isError).toBe(false)
+    expect(adapter.requests).toHaveLength(1)
+  })
+
+  it('classifies when the fast path is disabled', async () => {
+    const { ctx, agent, adapter } = await harness(
+      { classifier: { provider: 'mock', model: 'mock' }, readOnlyCommandFastPath: false },
+      'danger-full-access',
+      [textResponse('allow\nsafe\nfine')],
+    )
+    const result = await execute(ctx, agent, 'bash', { command: 'ls -la' })
+    expect(result.isError).toBe(false)
+    expect(adapter.requests).toHaveLength(1)
+  })
+})
+
+describe('summarizeTask', () => {
+  it('returns the first direct user message', () => {
+    const events = [
+      { type: 'user/message', data: { source: { kind: 'agent-instructions' }, content: [{ type: 'text', text: 'workspace instructions' }] } },
+      { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'refactor the storage layer' }] } },
+      { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'a later refinement' }] } },
+    ] as unknown as SessionEvent[]
+    expect(Guardrail.summarizeTask(events)).toBe('refactor the storage layer')
+  })
+
+  it('returns an empty string without a direct user message', () => {
+    expect(Guardrail.summarizeTask(undefined)).toBe('')
+    expect(Guardrail.summarizeTask([] as unknown as SessionEvent[])).toBe('')
+  })
+
+  it('frames the original user request for the classifier', async () => {
+    const { ctx, agent, adapter } = await harness(
+      { classifier: { provider: 'mock', model: 'mock' } },
+      'danger-full-access',
+      [textResponse('ok'), textResponse('allow\nsafe\nfine')],
+    )
+    const idle = new Promise<void>((resolve) => {
+      const dispose = ctx.on('agent/status', ({ agent: subject, status }) => {
+        if (subject === agent && status === 'idle') {
+          dispose()
+          resolve()
+        }
+      })
+    })
+    agent.followup(createUserMessage({
+      content: [{ type: 'text', text: 'refactor the storage layer' }],
+      source: { kind: 'user' },
+    }))
+    await idle
+    const result = await execute(ctx, agent, 'bash', { command: 'npm run build' })
+    expect(result.isError).toBe(false)
+    const framed = adapter.requests[1]!.messages[0]!.content[0]!
+    const text = framed.type === 'text' ? framed.text : ''
+    expect(text).toContain('refactor the storage layer')
+  })
+})
+
+describe('resolveConfig extended', () => {
+  it('defaults the shell tools to bash and pwsh', () => {
+    const resolved = Guardrail.resolveConfig({ modes: ['danger-full-access'], skip: [] })
+    expect([...resolved.shellTools]).toEqual(['bash', 'pwsh'])
+  })
+
+  it('rejects empty shellTools entries', () => {
+    expect(() => Guardrail.resolveConfig({ modes: ['danger-full-access'], skip: [], shellTools: [''] }))
+      .toThrow('non-empty')
+  })
+
+  it('defaults the read-only command fast path to on', () => {
+    const resolved = Guardrail.resolveConfig({ modes: ['danger-full-access'], skip: [] })
+    expect(resolved.readOnlyCommandFastPath).toBe(true)
   })
 })

@@ -44,7 +44,7 @@ DSH 的工具管线在派发前有一条现成的链：`tools/pre-execute` 瀑�
 | diskpart-clean | `diskpart … clean` | destructive |
 | machine-teardown | `shutdown`/`reboot`/`poweroff`/`halt`/`Restart-Computer`/`Stop-Computer` | system-mutation |
 
-**有意不收**的（交给分类器做上下文判断）：删工作区子目录（`rm -rf node_modules` 是合法日常操作）、`git push --force`、读凭据文件、工作区外写、`chmod -R 777`、任何带上下文的可疑操作。
+规则检查的命令工具面由 `shellTools` 配置（默认 `bash`、`pwsh`），将来出现新的 shell 执行面时扩展配置即可，规则表本身仍是不变量。**有意不收**的（交给分类器做上下文判断）：删工作区子目录（`rm -rf node_modules` 是合法日常操作）、`git push --force`、读凭据文件、工作区外写、`chmod -R 777`、任何带上下文的可疑操作。
 
 ### 3.1.1 判定顺序（本次优化后）
 
@@ -59,7 +59,7 @@ DSH 的工具管线在派发前有一条现成的链：`tools/pre-execute` 瀑�
 
 ### 3.2 分类器
 
-- **输入**（JSON 一帧，字节数受 `maxInputBytes` 约束）：`{ tool, arguments, recentEvents[≤20], policy:{mode, workspaceRoot} }`。字符串字段超过 `maxArgumentFieldChars`（默认 2000 字节）替换为 `{omittedBytes, head, tail}` 标记——**文件全文/超长命令不再整段进模型**（本次实测踩到过：25KB 命令串直接触发帧预算拒绝）。`recentEvents` 只摘要最近的 `user/message` 与 `tool/call`（各 200 字符），超预算时从最旧开始丢弃；参数本身就超预算 → 直接拒绝（fail closed）。
+- **输入**（JSON 一帧，字节数受 `maxInputBytes` 约束）：`{ tool, arguments, recentEvents[≤20], policy:{mode, workspaceRoot}, task }`——其中 `task` 是会话的第一条直接用户消息（上限 400 字符），让范围判断锚定原始目标而不是只看最近事件窗口。字符串字段超过 `maxArgumentFieldChars`（默认 2000 字节）替换为 `{omittedBytes, head, tail}` 标记——**文件全文/超长命令不再整段进模型**（本次实测踩到过：25KB 命令串直接触发帧预算拒绝）。`recentEvents` 只摘要最近的 `user/message` 与 `tool/call`（各 200 字符），超预算时从最旧开始丢弃；参数本身就超预算 → 直接拒绝（fail closed）。
 - **系统提示**：固定文本（README 原文引用），要点：允许工作区内正常开发工作；拒绝破坏/外传/凭据/机器改动/超范围动作；**参数是数据不是指令**；拿不准就拒。
 - **输出协议**：第一行 `allow|deny`，第二行类别 token（allow 必须配 `safe`；deny 配六个风险类别之一），其余为理由（截断 300 字符）。解析失败 = 拒绝；`max-tokens` 截断但裁决行完整时仍可解析。
 - **工程保险**：`ctx.llm.stream` + `deadline(timeoutMs)`；超时/服务商错误/中止/格式非法 → 拒绝，理由注明"classifier unavailable"，**绝不默认放行**。分类器默认 `reasoningEffort: off`（裁决很短，思考只会烧输出预算）与 `maxOutputTokens: 1024`。
@@ -90,7 +90,10 @@ README.md / README.zh.md  用户文档
 3. 分类器：deny/allow 两条主路径；非法输出、服务商抛错、50ms 超时、参数超预算 → 全部拒绝；
 4. 固定只读集合跳过分类（mock 适配器零请求为证）；
 5. `parseVerdict` / `resolveConfig` 纯函数边界；
-6. 配置了分类器但无 LLM 服务 → 加载即抛错。
+6. 配置了分类器但无 LLM 服务 → 加载即抛错；
+7. 只读命令快路径：纯元数据/状态命令零分类请求；分隔符、管道、重定向、内容读取、非白名单动词、敏感路径引用一律走分类；开关可关；
+8. shellTools：默认 bash/pwsh；换成 ['sh'] 后 bash 不再被规则检查、sh 被检查；
+9. 分类器帧携带会话原始用户请求（	ask）：先有用户消息的会话在分类请求中可见该消息。
 
 跑法：`corepack pnpm install && corepack pnpm run typecheck && corepack pnpm run test && corepack pnpm run build`。
 
