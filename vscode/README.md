@@ -13,6 +13,7 @@
 ## 语义与边界
 
 - 目标路径基于 `agent.session.header.cwd` 解析，**必须落在工作区内**（`..` 逃逸与绝对路径一律拒绝），命令无法让编辑器打开任意宿主路径
+- **含空格路径（如 `My Project/design notes.md`）正确处理**：Windows cmd 模式下自动加引号整体传递，不会按空格拆成多个文件打开（`quoteArgsForShell`）
 - 无工作目录的会话 → 明确报错
 - 编辑器 CLI 缺失（ENOENT）→ 报错提示安装 VS Code 并确保 `code` 命令可用（Windows 使用 `code.cmd`）
 - 进程以 detached + unref 启动，编辑器窗口独立于 dsh 生命周期

@@ -5,6 +5,7 @@ import type { ChildProcess } from 'node:child_process'
 import {
   createVscodeHandler,
   openInEditor,
+  quoteArgsForShell,
   resolveTargetPath,
   spawnFailureText,
 } from '../src/index.ts'
@@ -74,7 +75,45 @@ describe('spawnFailureText', () => {
   })
 })
 
+describe('quoteArgsForShell', () => {
+  it('leaves non-Windows args verbatim', () => {
+    const args = ['code', '/work/My Project/design notes.md', '--reuse-window']
+    expect(quoteArgsForShell(args, false)).toEqual(args)
+  })
+
+  it('quotes whitespace-containing args for the Windows cmd shell', () => {
+    const args = ['code', 'D:\\work\\My Project/design notes.md', '--reuse-window']
+    expect(quoteArgsForShell(args, true)).toEqual([
+      'code',
+      '"D:\\work\\My Project/design notes.md"',
+      '--reuse-window',
+    ])
+  })
+
+  it('leaves whitespace-free args unquoted on Windows', () => {
+    expect(quoteArgsForShell(['code', 'D:\\work\\proj'], true)).toEqual(['code', 'D:\\work\\proj'])
+  })
+})
+
 describe('openInEditor', () => {
+  it('quotes a whitespace-containing target on Windows spawns', async () => {
+    const calls: Array<{ command: string; args: string[]; shell: boolean }> = []
+    const child = fakeChild()
+    const target = 'D:\\work\\My Project/design notes.md'
+    const spawned = openInEditor('code', [], target, (command, args, options) => {
+      calls.push({ command, args: [...args], shell: options.shell === true })
+      return child
+    })
+    child.emitSpawn()
+    await spawned
+    expect(calls[0]!.command).toBe('code')
+    expect(calls[0]!.shell).toBe(process.platform === 'win32')
+    if (process.platform === 'win32') {
+      expect(calls[0]!.args).toEqual([`"${target}"`])
+    } else {
+      expect(calls[0]!.args).toEqual([target])
+    }
+  })
   it('resolves when the child spawns', async () => {
     const calls: Array<{ command: string; args: string[] }> = []
     const child = fakeChild()
@@ -124,6 +163,26 @@ describe('createVscodeHandler', () => {
     child.emitSpawn()
     await pending
     expect(calls).toEqual([['code', resolve(cwd, 'src/main.ts')]])
+  })
+
+  it('opens a whitespace-containing workspace root', async () => {
+    const spacedCwd = resolve('/work/My Project/design notes.md')
+    const spacedAgent = { session: { header: { cwd: spacedCwd } } } as never
+    const calls: string[][] = []
+    const child = fakeChild()
+    const handler = createVscodeHandler(resolveConfig({}), (command, args) => {
+      calls.push([command, ...args])
+      return child
+    })
+    const pending = handler({ agent: spacedAgent, rawInput: '' } as never)
+    child.emitSpawn()
+    const result = await pending
+    expect(result).toEqual({ kind: 'success', text: `已在 VSCode 中打开 ${spacedCwd}` })
+    if (process.platform === 'win32') {
+      expect(calls).toEqual([['code', `"${spacedCwd}"`]])
+    } else {
+      expect(calls).toEqual([['code', spacedCwd]])
+    }
   })
 
   it('rejects a path escaping the workspace', async () => {

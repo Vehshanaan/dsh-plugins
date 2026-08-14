@@ -77,6 +77,23 @@ export function resolveTargetPath(cwd: string, rawInput: string): string {
 }
 
 /**
+ * Quote arguments that need it for the Windows cmd shell. cmd splits
+ * unquoted arguments on whitespace, so a target like
+ * `D:\...\My Project/design notes.md` would otherwise reach the editor as
+ * several separate paths — VS Code then opens each fragment as its own file.
+ * Windows paths cannot contain `"`, so wrapping is safe; other cmd
+ * metacharacters inside a quoted argument are inert. Non-Windows spawns pass
+ * the argument array verbatim and need no quoting.
+ * @param args - the raw argument list.
+ * @param win32 - whether the child runs under the Windows cmd shell.
+ * @returns the shell-ready argument list.
+ */
+export function quoteArgsForShell(args: readonly string[], win32: boolean): string[] {
+  if (!win32) return [...args]
+  return args.map(arg => /\s/.test(arg) ? `"${arg}"` : arg)
+}
+
+/**
  * Spawn the editor for one target path. Resolves once the child started;
  * rejects when the spawn itself fails (e.g. the editor CLI is missing).
  * @param command - the editor CLI command.
@@ -91,9 +108,10 @@ export function openInEditor(
   target: string,
   spawnFn: SpawnFn = defaultSpawn,
 ): Promise<void> {
+  const win32 = process.platform === 'win32'
   return new Promise<void>((resolveSpawned, reject) => {
-    const child = spawnFn(command, [...extraArgs, target], {
-      shell: process.platform === 'win32',
+    const child = spawnFn(command, quoteArgsForShell([...extraArgs, target], win32), {
+      shell: win32,
     })
     child.once('error', (error: Error) => { reject(error) })
     child.once('spawn', () => { resolveSpawned() })
