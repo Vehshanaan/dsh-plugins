@@ -39,7 +39,7 @@ Error: auto-safety guardrail denied bash (destructive): recursive delete (rm wit
 
 ## 加载方式
 
-构建后，让 profile 补丁指向构建产物（启动器完全不变）：
+构建后，让 profile 补丁以 ile:// URL 形式指向构建产物——loader 会把条目名直接交给 import()，Windows 裸盘符路径会被当成协议拒绝（启动器完全不变）：
 
 ```sh
 corepack pnpm install && corepack pnpm run build

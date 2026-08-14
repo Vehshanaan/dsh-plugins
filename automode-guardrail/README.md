@@ -39,7 +39,7 @@ Decision metadata (rule id, verdict category, classifier route and input size) i
 
 ## Loading
 
-Build, then point a profile patch at the built entry (the launcher stays the same):
+Build, then point a profile patch at the built entry through a ile:// URL — the loader hands the entry name to import(), which rejects bare Windows drive paths (the launcher stays the same):
 
 ```sh
 corepack pnpm install && corepack pnpm run build

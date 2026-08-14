@@ -3,7 +3,7 @@
 #   corepack pnpm install && corepack pnpm run build   (inside dsh-plugins)
 - insert:
     - id: automode-guardrail
-      name: '<checkout>/automode-guardrail/dist/index.js'
+      name: 'file:///<checkout>/automode-guardrail/dist/index.js'
       config:
         modes: ['danger-full-access']
         skip: []
