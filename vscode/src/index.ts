@@ -45,6 +45,9 @@ export type SpawnFn = (
   options: SpawnOptions,
 ) => ChildProcess
 
+/** Environment variable carrying the target on Windows, where cmd expands `%` even inside double quotes. */
+const TARGET_ENV_VAR = 'DSH_VSCODE_TARGET'
+
 /** The default spawn: detached fire-and-forget so the editor outlives the host. */
 function defaultSpawn(command: string, args: readonly string[], options: SpawnOptions): ChildProcess {
   const child = spawn(command, [...args], {
@@ -109,9 +112,17 @@ export function openInEditor(
   spawnFn: SpawnFn = defaultSpawn,
 ): Promise<void> {
   const win32 = process.platform === 'win32'
+  // cmd expands %VAR% even inside double quotes, so a percent-bearing target
+  // travels via the environment instead: the expansion result is not re-scanned
+  // for further % pairs, and the quoting stays exact.
+  const percentTarget = win32 && target.includes('%')
+  const args = percentTarget
+    ? [...quoteArgsForShell(extraArgs, true), `"%${TARGET_ENV_VAR}%"`]
+    : quoteArgsForShell([...extraArgs, target], win32)
   return new Promise<void>((resolveSpawned, reject) => {
-    const child = spawnFn(command, quoteArgsForShell([...extraArgs, target], win32), {
+    const child = spawnFn(command, args, {
       shell: win32,
+      ...percentTarget ? { env: { ...process.env, [TARGET_ENV_VAR]: target } } : {},
     })
     child.once('error', (error: Error) => { reject(error) })
     child.once('spawn', () => { resolveSpawned() })

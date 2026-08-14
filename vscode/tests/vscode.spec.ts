@@ -209,3 +209,22 @@ describe('createVscodeHandler', () => {
     expect(result).toEqual({ kind: 'error', text: '当前会话没有工作目录，无法打开。' })
   })
 })
+describe('percent-bearing targets', () => {
+  it('routes them through the environment on Windows and directly elsewhere', async () => {
+    const calls: Array<{ command: string; args: string[]; env?: NodeJS.ProcessEnv }> = []
+    const child = fakeChild()
+    const target = 'D:\\work\\100% complete\\proj'
+    const spawned = openInEditor('code', [], target, (command, args, options) => {
+      calls.push({ command, args: [...args], env: options.env })
+      return child
+    })
+    child.emitSpawn()
+    await spawned
+    if (process.platform === 'win32') {
+      expect(calls[0]!.args).toEqual(['"%DSH_VSCODE_TARGET%"'])
+      expect(calls[0]!.env?.DSH_VSCODE_TARGET).toBe(target)
+    } else {
+      expect(calls[0]!.args).toEqual([target])
+    }
+  })
+})
