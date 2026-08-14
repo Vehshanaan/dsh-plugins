@@ -6,8 +6,9 @@ Automatic instruction-safety guardrail for full-access sessions: when a session 
 
 Two layers:
 
-- **Hard rules** — a synchronous, monotonic, deny-only guard (`ctx.tools.guard`) matches shell commands (`bash`, `pwsh`) against irreversible-catastrophe signatures: recursive deletes of filesystem roots, the home directory, the workspace root, or a root glob; raw-device writes (`dd of=/dev/…`); `mkfs`; `format <drive>:`; `diskpart clean`; and machine teardown (`shutdown`, `reboot`, `Restart-Computer`, …). A guard denial cannot be overridden by any `tools/pre-execute` listener.
-- **LLM classifier** (optional) — an outermost `tools/pre-execute` listener judges every remaining call against a framed JSON input (tool name, full arguments, up to 20 summarized recent human messages and tool calls, and the standing sandbox policy). `allow` delegates; `deny` short-circuits the pipeline with a reason the model receives as the tool error. Any classifier failure — timeout, provider error, invalid reply — denies (fail closed).
+- **Hard rules** — a synchronous, monotonic, deny-only guard (`ctx.tools.guard`) plus a first check in the pre-execute listener matches shell commands (`bash`, `pwsh`) against irreversible-catastrophe signatures: recursive deletes of filesystem roots, the home directory, the workspace root, or a root glob; raw-device writes (`dd of=/dev/…`); `mkfs`; `format <drive>:`; `diskpart clean`; and machine teardown (`shutdown`, `reboot`, `Restart-Computer`, …). Every matcher is anchored to a command position (start or a shell separator), so command text embedded inside a script being written does not hard-deny the write itself. A guard denial cannot be overridden by any `tools/pre-execute` listener.
+- **Workspace-write fast path** — `write`/`edit` calls whose target resolves inside the workspace root and is not a credential/secret file name skip the model entirely (the routine work of a coding agent).
+- **LLM classifier** (optional) — an outermost `tools/pre-execute` listener judges every remaining call against a framed JSON input (tool name, bounded arguments — oversized string fields become a head/tail marker — up to 20 summarized recent human messages and tool calls, and the standing sandbox policy). `allow` delegates; `deny` short-circuits the pipeline with a reason the model receives as the tool error. Any classifier failure — timeout, provider error, invalid reply — denies (fail closed).
 
 The fixed read-only tool set (`read`, `glob`, `grep`, `read_image`, `job_output`, `job_list`, `todo_write`, `get_goal`, `list_agents`, `skill`, `ask_user_question`, `exit_plan_mode`) skips classification; the hard rules still apply. `skip` extends the set.
 
@@ -17,12 +18,14 @@ The fixed read-only tool set (`read`, `glob`, `grep`, `read_image`, `job_output`
 config:
   modes: ['danger-full-access']   # sandbox modes that arm the guardrail
   skip: []                        # extra read-only tool names
+  workspaceWriteFastPath: true    # skip the model for in-workspace non-sensitive writes
   classifier:                     # omit for the rules-only mode
     provider: deepseek-official   # registered LLM provider route
     model: deepseek-v4-flash      # exact model id
     maxInputBytes: 12000          # UTF-8 bytes of the framed input
     maxOutputTokens: 1024         # auxiliary output-token cap
     reasoningEffort: off          # thinking effort; off keeps verdicts fast (default)
+    maxArgumentFieldChars: 2000   # per-field string cap; larger fields become head/tail markers
 ```
 
 Misconfiguration fails loud at load: unknown modes, empty `skip` entries, invalid classifier budgets, or a configured classifier without a composed LLM service all throw. The hard-rule table and the fixed skip set are security invariants — not configurable.
@@ -39,7 +42,7 @@ Decision metadata (rule id, verdict category, classifier route and input size) i
 
 ## Loading
 
-Build, then point a profile patch at the built entry through a ile:// URL — the loader hands the entry name to import(), which rejects bare Windows drive paths (the launcher stays the same):
+Build, then point a profile patch at the built entry through a `file://` URL — the loader hands the entry name to `import()`, which rejects bare Windows drive paths (the launcher stays the same):
 
 ```sh
 corepack pnpm install && corepack pnpm run build
@@ -89,4 +92,6 @@ Append-only; denials surface as ordinary tool results and do not rewrite earlier
 - **No decision caching** — repeated calls of the same shape each pay one classifier round trip. A per-turn verdict cache is deferred.
 - **Classifier cutoffs still deny** — a stream that ends with `max-tokens` is parsed if the verdict lines are complete, but a cutoff before a verdict denies (fail closed). The classifier defaults to `reasoningEffort: off` so verdicts are short and the 1024-token cap is rarely reached; deployments that raise the effort should raise `maxOutputTokens` too.
 - **No custom session events** — the harness defers a registration surface for out-of-repo plugin event types, so decision metadata lives in host logs only; post-hoc review uses log correlation, not session replay.
+- **Fast-path symlink caveat** — the in-workspace fast path canonicalizes targets with `realpath` when they exist; a write through a symlink whose target does not exist yet falls back to the lexical path, so a not-yet-created symlinked target could bypass the containment check. The classifier, not the fast path, judges such edge deployments when exact containment matters.
+- **Rule matching is text-based** — anchored command-position patterns keep embedded command examples inside written scripts from hard-denying the write itself, but a command that genuinely begins with a catastrophic signature is denied regardless of intent; rename or restructure such commands (the classifier path) when they are legitimate.
 - **Classifier summaries omit assistant text and tool results** — scope judgment uses the recent human messages and tool calls only, which keeps the input bounded at the cost of less context.

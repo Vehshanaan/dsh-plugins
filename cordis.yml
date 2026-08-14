@@ -1,3 +1,8 @@
+# MIGRATED: the live mount moved to $DSH_HOME/profiles/web/cordis.patch.yml
+# (plain `dsh web` now loads these plugins — no --patch needed). This file is
+# kept as the source reference for plugin configuration; edit BOTH places when
+# changing plugin config, and rebuild the plugin's dist/ first.
+#
 # Auto-safety guardrail patch: screens tool calls while a session runs in an
 # armed sandbox mode (default danger-full-access). Build first:
 #   corepack pnpm install && corepack pnpm run build   (inside dsh-plugins)
@@ -21,3 +26,8 @@
 - insert:
     - id: btw
       name: 'file:///<checkout>/btw/dist/index.js'
+
+# /vscode open-in-editor: open the current workspace in VS Code.
+- insert:
+    - id: vscode
+      name: 'file:///<checkout>/vscode/dist/index.js'

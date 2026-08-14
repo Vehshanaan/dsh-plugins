@@ -17,6 +17,8 @@ export interface ClassifierConfig {
   maxOutputTokens?: number
   /** Thinking effort for the classifier call (default `off` — verdicts are short; reasoning wastes the budget). */
   reasoningEffort?: 'off' | 'high' | 'max'
+  /** Cap in UTF-8 bytes for string argument fields sent to the classifier; larger fields become a head/tail marker (default 2000). */
+  maxArgumentFieldChars?: number
   /** End-to-end classification deadline in milliseconds (default 5000). */
   timeoutMs?: number
 }
@@ -27,6 +29,12 @@ export interface GuardrailConfig {
   modes?: SandboxMode[]
   /** Extra read-only tool names exempt from classification; the fixed read-only set and the hard rules always apply. */
   skip?: string[]
+  /**
+   * Skip LLM classification for `write`/`edit` calls whose target resolves
+   * inside the workspace root and is not a sensitive file name (default
+   * `true`). Hard rules still apply.
+   */
+  workspaceWriteFastPath?: boolean
   /** LLM classifier; omitted runs the rules-only mode. */
   classifier?: ClassifierConfig
 }
@@ -38,6 +46,8 @@ export interface ResolvedClassifierConfig {
   maxInputBytes: number
   maxOutputTokens: number
   reasoningEffort: 'off' | 'high' | 'max'
+  /** Per-field string cap applied to the framed arguments. */
+  maxArgumentFieldChars: number
   timeoutMs: number
 }
 
@@ -46,6 +56,7 @@ export interface ResolvedConfig {
   modes: readonly SandboxMode[]
   /** Fixed read-only tool names union the configured extras. */
   skip: ReadonlySet<string>
+  workspaceWriteFastPath: boolean
   classifier?: ResolvedClassifierConfig
 }
 

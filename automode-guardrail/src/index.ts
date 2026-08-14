@@ -4,21 +4,28 @@
  * nothing and no escalation approval exists — this plugin is the only policy
  * layer between the model and the host).
  *
- * Two layers, both registered on the tool registry pipeline:
+ * Layers, cheapest first, all registered on the tool registry pipeline:
  *
- * - `ctx.tools.guard` — a synchronous, monotonic, deny-only guard matching
- *   shell commands against irreversible-catastrophe signatures (recursive
- *   deletes of roots/home/workspace, raw-device writes, disk formatting,
- *   machine teardown). Guard denials cannot be overridden by any
- *   `tools/pre-execute` listener.
+ * - `workspaceWriteFastPath` — `write`/`edit` calls whose target resolves
+ *   inside the workspace root and is not a sensitive file name skip the model
+ *   entirely (in-workspace edits are the routine work of a coding agent).
+ * - `ctx.tools.guard` plus a first check in the pre-execute listener — the
+ *   hard rules match shell commands against irreversible-catastrophe
+ *   signatures (recursive deletes of roots/home/workspace, raw-device writes,
+ *   disk formatting, machine teardown); catastrophic calls are denied before
+ *   the model is consulted, and guard denials cannot be overridden by any
+ *   listener.
  * - `tools/pre-execute` (outermost, `prepend: true`) — an optional LLM
  *   classifier judging every remaining call: `allow` delegates (`next()`),
  *   `deny` short-circuits the pipeline with a reason the model receives as the
  *   tool error. Any classifier failure denies (fail closed): a verdict is
  *   never invented.
  *
- * Read-only tool names (the fixed set plus the configured extras) skip
- * classification; the hard rules still apply to them.
+ * Classifier input is bounded: string argument fields over
+ * `maxArgumentFieldChars` become a head/tail marker with the byte count, so
+ * large file payloads never ride into the model, and the whole frame is capped
+ * by `maxInputBytes`. Read-only tool names (the fixed set plus the configured
+ * extras) skip classification; the hard rules still apply.
  *
  * Audit trail: decisions are host-log records; the model-visible denial text
  * reaches the session log through the ordinary `tool/result` event the tools
@@ -34,6 +41,8 @@
  */
 
 import { homedir } from 'node:os'
+import { realpathSync } from 'node:fs'
+import { resolve as resolvePath, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { BlockAssembler, createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
@@ -73,16 +82,17 @@ export const inject = ['tools', 'sandboxPolicy', 'systemPrompt']
 export const Config: z<GuardrailConfig> = z.object({
   modes: z.array(z.union(['read-only', 'workspace-write', 'danger-full-access'] as const)).default(['danger-full-access']),
   skip: z.array(z.string()).default([]),
+  workspaceWriteFastPath: z.boolean().default(true),
   classifier: z.object({
     provider: z.string(),
     model: z.string(),
     maxInputBytes: z.number().default(12000),
     maxOutputTokens: z.number().default(1024),
     reasoningEffort: z.union(['off', 'high', 'max'] as const).default('off'),
+    maxArgumentFieldChars: z.number().default(2000),
     timeoutMs: z.number().default(5000),
   }),
 })
-
 /** Read-only tool names exempt from classification. Fixed security invariant: these names perform no side effects. */
 const FIXED_SKIP_TOOLS: ReadonlySet<string> = new Set([
   'read',
@@ -102,6 +112,27 @@ const FIXED_SKIP_TOOLS: ReadonlySet<string> = new Set([
 /** Shell tools whose command string the hard rules inspect. */
 const SHELL_TOOLS: ReadonlySet<string> = new Set(['bash', 'pwsh'])
 
+/** Tools whose in-workspace target may take the fast path. */
+const WORKSPACE_WRITE_TOOLS: ReadonlySet<string> = new Set(['write', 'edit'])
+
+/** File names the fast path refuses to skip — credential and secret files. Case-folded: over-matching only costs a classifier call. */
+const SENSITIVE_FILE_NAMES: ReadonlySet<string> = new Set([
+  '.env',
+  '.git-credentials',
+  '.netrc',
+  '.npmrc',
+  '.pypirc',
+  'credentials.yaml',
+  'credentials.yml',
+  'id_dsa',
+  'id_ecdsa',
+  'id_ed25519',
+  'id_rsa',
+])
+
+/** File extensions the fast path refuses to skip — secret material. */
+const SENSITIVE_FILE_EXTENSIONS: ReadonlySet<string> = new Set(['.key', '.p12', '.pem', '.pfx'])
+
 /** Timeout code stamped on the classifier deadline (host diagnostics only). */
 const CLASSIFIER_TIMEOUT_CODE = 'AUTO_SAFETY_TIMEOUT'
 
@@ -113,6 +144,10 @@ const RECENT_EVENT_CAP = 20
 
 /** Maximum characters of one summarized recent event. */
 const SUMMARY_CHARS = 200
+
+/** Head/tail sizes of the marker replacing oversized argument string fields. */
+const BOUND_HEAD_CHARS = 200
+const BOUND_TAIL_CHARS = 200
 
 /** The stable risk categories a deny verdict may name. */
 const RISK_CATEGORIES: readonly RiskCategory[] = [
@@ -135,13 +170,13 @@ const CLASSIFIER_SYSTEM_PROMPT = [
   'decision ∈ {allow, deny}',
   'category ∈ {safe, destructive, exfiltration, credentials, system-mutation, out-of-scope, suspicious}',
   'allow requires category safe.',
+  'Keep the reason to at most 50 words.',
 ].join('\n')
 
 /** Stable model-facing notice shown while the guardrail is armed; quoted verbatim in the README. */
 const ACTIVE_SENTENCE =
   'Auto-safety guardrail active: this session runs with unrestricted file access, and tool calls are screened before execution. '
   + 'Denied calls return a reason — adapt with a different approach instead of re-issuing the denied call.'
-
 /**
  * Validate and default the plugin config. Misconfiguration fails loud.
  * @param config - loader-validated config (schema defaults already applied).
@@ -157,15 +192,20 @@ export function resolveConfig(config: GuardrailConfig): ResolvedConfig {
   for (const tool of skip) {
     if (tool.length === 0) throw new Error('automode-guardrail: `skip` entries must be non-empty strings')
   }
+  const workspaceWriteFastPath = config.workspaceWriteFastPath ?? true
   const classifier = config.classifier
-  if (classifier === undefined) return { modes, skip }
+  if (classifier === undefined) return { modes, skip, workspaceWriteFastPath }
   const hasProvider = typeof classifier.provider === 'string' && classifier.provider.length > 0
   const hasModel = typeof classifier.model === 'string' && classifier.model.length > 0
   // The loader materializes an omitted nested object with its defaults filled,
   // so an absent classifier reaches this point as two empty route fields.
-  if (!hasProvider && !hasModel) return { modes, skip }
+  if (!hasProvider && !hasModel) return { modes, skip, workspaceWriteFastPath }
   if (!hasProvider || !hasModel) {
     throw new Error('automode-guardrail: classifier provider and model must be supplied together as non-empty strings')
+  }
+  const maxArgumentFieldChars = classifier.maxArgumentFieldChars ?? 2000
+  if (!Number.isInteger(maxArgumentFieldChars) || maxArgumentFieldChars < 64) {
+    throw new Error(`automode-guardrail: classifier maxArgumentFieldChars must be an integer >= 64 (got ${maxArgumentFieldChars})`)
   }
   const resolved: ResolvedClassifierConfig = {
     provider: classifier.provider,
@@ -173,6 +213,7 @@ export function resolveConfig(config: GuardrailConfig): ResolvedConfig {
     maxInputBytes: classifier.maxInputBytes as number,
     maxOutputTokens: classifier.maxOutputTokens as number,
     reasoningEffort: classifier.reasoningEffort as 'off' | 'high' | 'max' ?? 'off',
+    maxArgumentFieldChars,
     timeoutMs: classifier.timeoutMs as number,
   }
   if (resolved.reasoningEffort !== 'off' && resolved.reasoningEffort !== 'high' && resolved.reasoningEffort !== 'max') {
@@ -187,7 +228,7 @@ export function resolveConfig(config: GuardrailConfig): ResolvedConfig {
   if (!Number.isInteger(resolved.timeoutMs) || resolved.timeoutMs < 1 || resolved.timeoutMs > MAX_TIMER_DELAY_MS) {
     throw new Error(`automode-guardrail: classifier timeoutMs must be an integer from 1 through ${MAX_TIMER_DELAY_MS} (got ${resolved.timeoutMs})`)
   }
-  return { modes, skip, classifier: resolved }
+  return { modes, skip, workspaceWriteFastPath, classifier: resolved }
 }
 
 /**
@@ -234,7 +275,6 @@ function normalizeCommand(command: string): string {
 function normalizePath(path: string): string {
   return path.replace(/\\/g, '/').replace(/\/+$/g, '').toLowerCase()
 }
-
 /**
  * Whether one `rm`-style target names a root the rules protect: a filesystem
  * root, home shorthand, system directory, drive root, a configured root
@@ -281,7 +321,10 @@ interface CatastrophicRule {
 /**
  * The hard-rule table. Each entry names an unambiguous catastrophe: the
  * classifier, not these rules, judges context-sensitive risk. Fixed security
- * invariants — not configurable.
+ * invariants — not configurable. Every matcher is anchored to a command
+ * position (start or a shell separator): embedded command text inside a script
+ * being WRITTEN must not hard-deny the write itself — such content is the
+ * classifier's call, not the rules'.
  */
 const CATASTROPHIC_RULES: readonly CatastrophicRule[] = [
   {
@@ -320,8 +363,8 @@ const CATASTROPHIC_RULES: readonly CatastrophicRule[] = [
   {
     id: 'dd-to-device',
     category: 'destructive',
-    detail: 'writing directly to a raw block device (dd of=/dev/…)',
-    matches: (command) => /\bdd\b/.test(command) && /of=\/dev\/\S+/.test(command),
+    detail: 'writing directly to a raw block device',
+    matches: (command) => /(^|[;&|])\s*dd\b/.test(command) && /of=\/dev\/\S+/.test(command),
   },
   {
     id: 'mkfs',
@@ -339,7 +382,7 @@ const CATASTROPHIC_RULES: readonly CatastrophicRule[] = [
     id: 'diskpart-clean',
     category: 'destructive',
     detail: 'diskpart clean on a host disk',
-    matches: (command) => /\bdiskpart\b/.test(command) && /\bclean\b/.test(command),
+    matches: (command) => /(^|[;&|])\s*diskpart\b/.test(command) && /\bclean\b/.test(command),
   },
   {
     id: 'machine-teardown',
@@ -348,7 +391,79 @@ const CATASTROPHIC_RULES: readonly CatastrophicRule[] = [
     matches: (command) => /^(shutdown|reboot|poweroff|halt|restart-computer|stop-computer)(\s|$)/.test(command),
   },
 ]
+/**
+ * Whether one file path names credential or secret material the fast path must
+ * not skip. Case-folded on purpose: over-matching only sends the call to the
+ * classifier (a false deny), never to a false allow.
+ * @param filePath - the raw `file_path` argument.
+ * @returns a human-readable reason, or undefined when the path is not sensitive.
+ */
+function sensitiveFileReason(filePath: string): string | undefined {
+  const normalized = filePath.replace(/\\/g, '/')
+  const basename = normalized.slice(normalized.lastIndexOf('/') + 1).toLowerCase()
+  if (SENSITIVE_FILE_NAMES.has(basename)) return 'the target is a credential or secret file'
+  const dot = basename.lastIndexOf('.')
+  if (dot >= 0 && SENSITIVE_FILE_EXTENSIONS.has(basename.slice(dot))) return 'the target carries a secret file extension'
+  if (normalized.split('/').includes('.ssh')) return 'the target lives under a .ssh directory'
+  return undefined
+}
 
+/** Canonical filesystem identity; a missing path falls back to its spelling. */
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync.native(path)
+  } catch {
+    return path
+  }
+}
+
+/**
+ * Whether one `write`/`edit` call may skip classification: the target resolves
+ * inside the canonical workspace root, is not sensitive, and the fast path is
+ * enabled. Symlinks are canonicalized when the path exists; a write through a
+ * symlink whose target does not exist yet falls back to the lexical path (see
+ * README: Known Limitations).
+ * @param exec - the pending call.
+ * @param policy - the already-resolved sandbox policy for this call.
+ * @param config - the resolved plugin config.
+ * @returns true when the call may proceed without the classifier.
+ */
+function workspaceFastPathAllows(exec: ToolExecution, policy: SandboxExecutionPolicy, config: ResolvedConfig): boolean {
+  if (!config.workspaceWriteFastPath) return false
+  if (!WORKSPACE_WRITE_TOOLS.has(exec.name)) return false
+  const args = exec.arguments
+  const filePath = args !== null && typeof args === 'object' ? (args as { file_path?: unknown }).file_path : undefined
+  if (typeof filePath !== 'string' || filePath.length === 0) return false
+  if (sensitiveFileReason(filePath) !== undefined) return false
+  const root = canonicalPath(policy.workspaceRoot)
+  const target = canonicalPath(resolvePath(policy.workspaceRoot, filePath))
+  const fold = process.platform === 'win32' ? (value: string): string => value.toLowerCase() : (value: string): string => value
+  const rootKey = fold(root)
+  const targetKey = fold(target)
+  return targetKey === rootKey || targetKey.startsWith(`${rootKey}${sep}`)
+}
+
+/**
+ * Hard-rule denial reason for one call, or undefined. Shared by the monotonic
+ * guard and the pre-execute listener (which runs it before the classifier so
+ * catastrophic calls never pay for classification).
+ * @param exec - the pending call.
+ * @param policy - the already-resolved sandbox policy for this call.
+ * @returns the model-visible denial reason, or undefined when no rule matches.
+ */
+function ruleDenial(exec: ToolExecution, policy: SandboxExecutionPolicy): string | undefined {
+  if (!SHELL_TOOLS.has(exec.name)) return undefined
+  const args = exec.arguments
+  const command = args !== null && typeof args === 'object' ? (args as { command?: unknown }).command : undefined
+  if (typeof command !== 'string') return undefined
+  const normalized = normalizeCommand(command)
+  const roots = shellRoots(exec, policy)
+  for (const rule of CATASTROPHIC_RULES) {
+    if (!rule.matches(normalized, roots)) continue
+    return denyReason(exec.name, rule.category, rule.detail)
+  }
+  return undefined
+}
 /**
  * Summarize the bounded session context a classifier verdict is judged
  * against: the most recent human messages and tool calls, newest first at the
@@ -378,7 +493,36 @@ function summarizeRecentEvents(exec: ToolExecution): { type: string; summary: st
 }
 
 /**
- * Frame the classifier input: the tool identity, its full arguments, the
+ * Replace string fields longer than `cap` UTF-8 bytes with a head/tail marker
+ * carrying the true byte count. Deterministic over the JSON value domain, so
+ * large file payloads and scripts never ride into the classifier input.
+ * @param value - the argument tree to bound.
+ * @param cap - the per-field byte cap.
+ * @returns the bounded tree.
+ */
+function boundStrings(value: unknown, cap: number): unknown {
+  if (typeof value === 'string') {
+    const bytes = Buffer.byteLength(value, 'utf8')
+    if (bytes <= cap) return value
+    return {
+      omittedBytes: bytes,
+      head: value.slice(0, BOUND_HEAD_CHARS),
+      tail: value.slice(-BOUND_TAIL_CHARS),
+    }
+  }
+  if (Array.isArray(value)) return value.map(item => boundStrings(item, cap))
+  if (value !== null && typeof value === 'object') {
+    const record: Record<string, unknown> = {}
+    for (const key of Object.keys(value)) {
+      record[key] = boundStrings((value as Record<string, unknown>)[key], cap)
+    }
+    return record
+  }
+  return value
+}
+
+/**
+ * Frame the classifier input: the tool identity, the bounded arguments, the
  * bounded recent events, and the standing policy. Dropped oldest events until
  * the frame fits `maxInputBytes`; an arguments payload that alone exceeds the
  * budget throws — the caller denies.
@@ -391,7 +535,7 @@ function frameInput(exec: ToolExecution, classifier: ResolvedClassifierConfig, p
   const recentEvents = summarizeRecentEvents(exec)
   const payload = {
     tool: exec.name,
-    arguments: exec.arguments,
+    arguments: boundStrings(exec.arguments, classifier.maxArgumentFieldChars),
     recentEvents,
     policy: { mode: policy.mode, workspaceRoot: policy.workspaceRoot },
   }
@@ -471,7 +615,7 @@ function denyReason(toolName: string, category: ClassifierCategory, detail: stri
  * Install the guardrail listeners. Fails loud when the classifier is
  * configured but no LLM service is composed.
  * @param ctx - plugin context carrying tools, sandbox policy, and the prompt registry.
- * @param config - validated {@link Config}; re-checked by {@link resolveConfig}.
+ * @param config - validated {@link GuardrailConfig}; re-checked by {@link resolveConfig}.
  */
 export function apply(ctx: Context, config: GuardrailConfig): void {
   const resolved = resolveConfig(config)
@@ -486,32 +630,37 @@ export function apply(ctx: Context, config: GuardrailConfig): void {
 
   const armed = (exec: ToolExecution): boolean => exec.agent !== undefined && armedModes.has(sandboxResolve(exec).mode)
 
-  // Hard rules: monotonic guard. Deny-only, applies after the pre-execute
-  // waterfall, and no listener can override it.
+  const classify = resolved.classifier === undefined || llm === undefined
+    ? undefined
+    : (exec: ToolExecution): Promise<Verdict> => classifyCall(llm, sandboxResolve, ctx.logger, resolved.classifier!, exec)
+
+  // Hard rules, monotonic: deny-only, applies after the pre-execute waterfall,
+  // and no listener can override it.
   ctx.tools.guard((exec) => {
     if (!armed(exec)) return undefined
-    if (!SHELL_TOOLS.has(exec.name)) return undefined
-    const args = exec.arguments
-    const command = args !== null && typeof args === 'object' ? (args as { command?: unknown }).command : undefined
-    if (typeof command !== 'string') return undefined
-    const normalized = normalizeCommand(command)
-    const roots = shellRoots(exec, sandboxResolve(exec))
-    for (const rule of CATASTROPHIC_RULES) {
-      if (!rule.matches(normalized, roots)) continue
-      ctx.logger.warn('[auto-safety] rules denied tool "%s" (%s): %s', exec.name, exec.callId, rule.id)
-      return denyReason(exec.name, rule.category, rule.detail)
+    const reason = ruleDenial(exec, sandboxResolve(exec))
+    if (reason !== undefined) {
+      ctx.logger.warn('[auto-safety] rules denied tool "%s" (%s): %s', exec.name, exec.callId, reason)
     }
-    return undefined
+    return reason
   })
 
-  // Classifier: outermost pre-execute listener. Short-circuits with a deny
+  // Outer pre-execute listener: fast path, then rules (before the model),
+  // then the skip set, then the classifier. Short-circuits with a deny
   // verdict; delegates (allow) so later listeners can still tighten.
   ctx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
     if (!armed(exec)) return next()
+    const policy = sandboxResolve(exec)
+    if (workspaceFastPathAllows(exec, policy, resolved)) return next()
+    const ruleReason = ruleDenial(exec, policy)
+    if (ruleReason !== undefined) {
+      ctx.logger.warn('[auto-safety] rules denied tool "%s" (%s): %s', exec.name, exec.callId, ruleReason)
+      return { kind: 'deny', reason: ruleReason }
+    }
     if (skipTools.has(exec.name)) return next()
-    if (llm === undefined || resolved.classifier === undefined) return next()
+    if (classify === undefined) return next()
     try {
-      const verdict = await classifyCall(llm, sandboxResolve, ctx.logger, resolved.classifier, exec)
+      const verdict = await classify(exec)
       if (verdict.decision === 'allow') {
         ctx.logger.info('[auto-safety] classifier allow (%s) for tool "%s"', verdict.category, exec.name)
         return next()

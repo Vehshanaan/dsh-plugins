@@ -52,6 +52,12 @@ async function harness(
     parameters: { path: { type: 'string', description: 'file path' } },
     async execute() { return [{ type: 'text', text: 'content' }] },
   }))
+  ctx.tools.register(defineContentToolFixture({
+    name: 'write',
+    description: 'w',
+    parameters: { file_path: { type: 'string', description: 'target path' }, content: { type: 'string', description: 'file content' } },
+    async execute() { return [{ type: 'text', text: 'written' }] },
+  }))
   const adapter = new MockAdapter(script)
   ctx.llm.registerAdapter(['mock'], adapter)
   const agent = ctx.agentLoop.create(SessionId('s1'), { provider: 'mock', model: 'mock' })
@@ -231,6 +237,80 @@ describe('classifier', () => {
   })
 })
 
+  it('denies catastrophic commands before consulting the classifier', async () => {
+    const { ctx, agent, adapter } = await harness(
+      { classifier: { provider: 'mock', model: 'mock' } },
+      'danger-full-access',
+      [],
+    )
+    const result = await execute(ctx, agent, 'bash', { command: 'rm -rf /' })
+    expect(result.isError).toBe(true)
+    expect(errorMessageOf(result)).toContain('(destructive)')
+    expect(adapter.requests).toHaveLength(0)
+  })
+describe('workspace write fast path', () => {
+  it('allows in-workspace writes without consulting the classifier', async () => {
+    const { ctx, agent, adapter } = await harness(
+      { classifier: { provider: 'mock', model: 'mock' } },
+      'danger-full-access',
+      [],
+    )
+    const result = await execute(ctx, agent, 'write', { file_path: 'sub/a.txt', content: 'hello' })
+    expect(result.isError).toBe(false)
+    expect(adapter.requests).toHaveLength(0)
+  })
+
+  it('still classifies sensitive target names', async () => {
+    const { ctx, agent, adapter } = await harness(
+      { classifier: { provider: 'mock', model: 'mock' } },
+      'danger-full-access',
+      [textResponse('allow\nsafe\nfine')],
+    )
+    const result = await execute(ctx, agent, 'write', { file_path: '.env', content: 'TOKEN=x' })
+    expect(result.isError).toBe(false)
+    expect(adapter.requests).toHaveLength(1)
+  })
+
+  it('still classifies targets outside the workspace root', async () => {
+    const { ctx, agent, adapter } = await harness(
+      { classifier: { provider: 'mock', model: 'mock' } },
+      'danger-full-access',
+      [textResponse('allow\nsafe\nfine')],
+    )
+    const result = await execute(ctx, agent, 'write', { file_path: '..\\outside.txt', content: 'x' })
+    expect(result.isError).toBe(false)
+    expect(adapter.requests).toHaveLength(1)
+  })
+
+  it('classifies when the fast path is disabled', async () => {
+    const { ctx, agent, adapter } = await harness(
+      { classifier: { provider: 'mock', model: 'mock' }, workspaceWriteFastPath: false },
+      'danger-full-access',
+      [textResponse('allow\nsafe\nfine')],
+    )
+    const result = await execute(ctx, agent, 'write', { file_path: 'sub/a.txt', content: 'hello' })
+    expect(result.isError).toBe(false)
+    expect(adapter.requests).toHaveLength(1)
+  })
+})
+
+describe('argument bounding', () => {
+  it('replaces oversized string fields with a head/tail marker', async () => {
+    const { ctx, agent, adapter } = await harness(
+      { classifier: { provider: 'mock', model: 'mock', maxArgumentFieldChars: 100 } },
+      'danger-full-access',
+      [textResponse('allow\nsafe\nfine')],
+    )
+    const big = 'y'.repeat(5000)
+    // A sensitive target keeps the call on the classifier path despite the fast path.
+    const result = await execute(ctx, agent, 'write', { file_path: '.env', content: big })
+    expect(result.isError).toBe(false)
+    const framed = adapter.requests[0]!.messages[0]!.content[0]!
+    const text = framed.type === 'text' ? framed.text : ''
+    expect(text).toContain('omittedBytes')
+    expect(text).not.toContain(big)
+  })
+})
 describe('parseVerdict', () => {
   it('accepts an allow verdict with the safe category', () => {
     expect(Guardrail.parseVerdict('allow\nsafe\nordinary build step')).toEqual({
@@ -306,6 +386,15 @@ describe('resolveConfig', () => {
     expect(() => Guardrail.resolveConfig(config)).toThrow('timeoutMs')
   })
 
+  it('rejects a maxArgumentFieldChars below 64', () => {
+    const config: GuardrailConfig = { modes: ['danger-full-access'], skip: [], classifier: { provider: 'p', model: 'm', maxArgumentFieldChars: 10, maxInputBytes: 100, maxOutputTokens: 10, timeoutMs: 100 } }
+    expect(() => Guardrail.resolveConfig(config)).toThrow('maxArgumentFieldChars')
+  })
+
+  it('defaults the workspace write fast path to on', () => {
+    const resolved = Guardrail.resolveConfig({ modes: ['danger-full-access'], skip: [] })
+    expect(resolved.workspaceWriteFastPath).toBe(true)
+  })
   it('rejects an unknown classifier reasoning effort', () => {
     const config = {
       modes: ['danger-full-access'],

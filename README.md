@@ -18,6 +18,7 @@ The npm/npx launcher works unchanged — the patch points at the built `dist/ind
 
 - `automode-guardrail/` — automatic instruction-safety guardrail for full-access sessions, in the spirit of Claude Code's auto mode: hard-rule guard plus an optional LLM classifier screening every tool call while the session runs in `danger-full-access` mode. See its [README](automode-guardrail/README.md) and the reviewable [implementation plan](automode-guardrail/IMPLEMENTATION-PLAN.md).
 - `btw/` — Claude Code style `/btw` side questions: ask a question that never enters the main conversation history, answered by a fresh tool-less side subagent. See its [README](btw/README.md).
+- `vscode/` — `/vscode` open-in-editor: open the current workspace (or a relative subpath) in VS Code via the `code` CLI, without a model turn. See its [README](vscode/README.md).
 
 ## TypeScript
 
