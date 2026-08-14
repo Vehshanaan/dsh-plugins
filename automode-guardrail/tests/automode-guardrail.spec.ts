@@ -11,7 +11,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import SandboxPolicy, { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import * as Guardrail from '../src/index.ts'
 import type { GuardrailConfig } from '../src/index.ts'
-import { MockAdapter, textResponse } from './mock-adapter.ts'
+import { MockAdapter, maxTokensResponse, textResponse } from './mock-adapter.ts'
 import type { MockScriptEntry } from './mock-adapter.ts'
 
 /**
@@ -154,6 +154,38 @@ describe('classifier', () => {
     expect(errorMessageOf(result)).toContain('invalid verdict')
   })
 
+  it('executes when the classifier is cut off after a complete verdict', async () => {
+    const { ctx, agent } = await harness(
+      { classifier: { provider: 'mock', model: 'mock' } },
+      'danger-full-access',
+      [maxTokensResponse('allow\nsafe\nordinary build step')],
+    )
+    const result = await execute(ctx, agent, 'bash', { command: 'npm run build' })
+    expect(result.isError).toBe(false)
+  })
+
+  it('denies when the classifier is cut off after the verdict lines', async () => {
+    const { ctx, agent } = await harness(
+      { classifier: { provider: 'mock', model: 'mock' } },
+      'danger-full-access',
+      [maxTokensResponse('deny\nsuspicious\nstream was cut')],
+    )
+    const result = await execute(ctx, agent, 'bash', { command: 'npm run build' })
+    expect(result.isError).toBe(true)
+    expect(errorMessageOf(result)).toContain('(suspicious)')
+  })
+
+  it('denies when the classifier is cut off before a verdict', async () => {
+    const { ctx, agent } = await harness(
+      { classifier: { provider: 'mock', model: 'mock' } },
+      'danger-full-access',
+      [maxTokensResponse('allow')],
+    )
+    const result = await execute(ctx, agent, 'bash', { command: 'npm run build' })
+    expect(result.isError).toBe(true)
+    expect(errorMessageOf(result)).toContain('invalid verdict')
+  })
+
   it('denies when the classifier provider fails', async () => {
     const { ctx, agent } = await harness(
       { classifier: { provider: 'mock', model: 'mock' } },
@@ -272,6 +304,24 @@ describe('resolveConfig', () => {
       classifier: { provider: 'p', model: 'm', maxInputBytes: 100, maxOutputTokens: 10, timeoutMs: 2_147_483_648 },
     }
     expect(() => Guardrail.resolveConfig(config)).toThrow('timeoutMs')
+  })
+
+  it('rejects an unknown classifier reasoning effort', () => {
+    const config = {
+      modes: ['danger-full-access'],
+      skip: [],
+      classifier: { provider: 'p', model: 'm', maxInputBytes: 100, maxOutputTokens: 10, timeoutMs: 100, reasoningEffort: 'turbo' },
+    } as unknown as GuardrailConfig
+    expect(() => Guardrail.resolveConfig(config)).toThrow('reasoningEffort')
+  })
+
+  it('defaults an omitted classifier reasoning effort to off', () => {
+    const resolved = Guardrail.resolveConfig({
+      modes: ['danger-full-access'],
+      skip: [],
+      classifier: { provider: 'p', model: 'm', maxInputBytes: 100, maxOutputTokens: 10, timeoutMs: 100 },
+    })
+    expect(resolved.classifier?.reasoningEffort).toBe('off')
   })
 })
 

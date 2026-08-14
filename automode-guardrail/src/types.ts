@@ -13,8 +13,10 @@ export interface ClassifierConfig {
   model: string
   /** Maximum UTF-8 bytes of the framed classification input (default 12000). */
   maxInputBytes?: number
-  /** Auxiliary output-token cap (default 200). */
+  /** Auxiliary output-token cap (default 1024). */
   maxOutputTokens?: number
+  /** Thinking effort for the classifier call (default `off` — verdicts are short; reasoning wastes the budget). */
+  reasoningEffort?: 'off' | 'high' | 'max'
   /** End-to-end classification deadline in milliseconds (default 5000). */
   timeoutMs?: number
 }
@@ -35,6 +37,7 @@ export interface ResolvedClassifierConfig {
   model: string
   maxInputBytes: number
   maxOutputTokens: number
+  reasoningEffort: 'off' | 'high' | 'max'
   timeoutMs: number
 }
 

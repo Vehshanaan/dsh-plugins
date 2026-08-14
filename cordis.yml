@@ -11,7 +11,8 @@
           provider: deepseek-official
           model: deepseek-v4-flash
           maxInputBytes: 12000
-          maxOutputTokens: 200
+          maxOutputTokens: 1024
+          reasoningEffort: off
           timeoutMs: 5000
 
 # /btw side questions: ask a question that never enters the conversation

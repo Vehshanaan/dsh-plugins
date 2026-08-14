@@ -36,7 +36,7 @@
 import { homedir } from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler, createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmRuntime, Message } from '@deepseek-ai/dsh-llm'
 import { deadline, MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
@@ -77,7 +77,8 @@ export const Config: z<GuardrailConfig> = z.object({
     provider: z.string(),
     model: z.string(),
     maxInputBytes: z.number().default(12000),
-    maxOutputTokens: z.number().default(200),
+    maxOutputTokens: z.number().default(1024),
+    reasoningEffort: z.union(['off', 'high', 'max'] as const).default('off'),
     timeoutMs: z.number().default(5000),
   }),
 })
@@ -171,7 +172,11 @@ export function resolveConfig(config: GuardrailConfig): ResolvedConfig {
     model: classifier.model,
     maxInputBytes: classifier.maxInputBytes as number,
     maxOutputTokens: classifier.maxOutputTokens as number,
+    reasoningEffort: classifier.reasoningEffort as 'off' | 'high' | 'max' ?? 'off',
     timeoutMs: classifier.timeoutMs as number,
+  }
+  if (resolved.reasoningEffort !== 'off' && resolved.reasoningEffort !== 'high' && resolved.reasoningEffort !== 'max') {
+    throw new Error(`automode-guardrail: classifier reasoningEffort must be one of "off", "high", "max" (got ${JSON.stringify(resolved.reasoningEffort)})`)
   }
   if (!Number.isInteger(resolved.maxInputBytes) || resolved.maxInputBytes < 1) {
     throw new Error(`automode-guardrail: classifier maxInputBytes must be an integer >= 1 (got ${resolved.maxInputBytes})`)
@@ -430,22 +435,27 @@ async function classifyCall(
       messages,
       system: CLASSIFIER_SYSTEM_PROMPT,
       maxTokens: classifier.maxOutputTokens,
+      reasoningEffort: ReasoningEffortId(classifier.reasoningEffort),
       signal: d.signal,
     }
     logger.info('[auto-safety] classifier asking %s/%s for tool "%s" (%d input bytes)', classifier.provider, classifier.model, exec.name, Buffer.byteLength(framed, 'utf8'))
     const assembler = new BlockAssembler()
     for await (const chunk of llm.stream(options)) assembler.push(chunk)
     const finish = assembler.finish
-    if (finish.kind !== 'stop') {
-      const cause = finish.kind === 'error' || finish.kind === 'aborted' ? finish.failure.message : finish.kind
-      throw new Error(`classifier stream ended with ${cause}`)
+    if (finish.kind === 'error' || finish.kind === 'aborted') {
+      throw new Error(`classifier stream ended with ${finish.failure.message}`)
     }
     const text = assembler.blocks()
       .filter(block => block.type === 'text')
       .map(block => block.text)
       .join('\n')
     const verdict = parseVerdict(text)
-    if (verdict === undefined) throw new Error('classifier produced an invalid verdict')
+    if (verdict === undefined) {
+      // The verdict lines come first, so a max-tokens cutoff usually still
+      // yields a parseable reply; only a genuinely incomplete stream fails.
+      const cause = finish.kind === 'max-tokens' ? 'the output token cap was reached before a complete verdict' : finish.kind
+      throw new Error(`classifier produced an invalid verdict (${cause})`)
+    }
     return verdict
   } finally {
     d[Symbol.dispose]()

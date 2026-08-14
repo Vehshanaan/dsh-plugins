@@ -21,8 +21,8 @@ config:
     provider: deepseek-official   # registered LLM provider route
     model: deepseek-v4-flash      # exact model id
     maxInputBytes: 12000          # UTF-8 bytes of the framed input
-    maxOutputTokens: 200          # auxiliary output-token cap
-    timeoutMs: 5000               # end-to-end classification deadline
+    maxOutputTokens: 1024         # auxiliary output-token cap
+    reasoningEffort: off          # thinking effort; off keeps verdicts fast (default)
 ```
 
 Misconfiguration fails loud at load: unknown modes, empty `skip` entries, invalid classifier budgets, or a configured classifier without a composed LLM service all throw. The hard-rule table and the fixed skip set are security invariants — not configurable.
@@ -87,5 +87,6 @@ Append-only; denials surface as ordinary tool results and do not rewrite earlier
 - **Policy control, not a security boundary** — a false `allow` executes the call; the classifier cannot contain what the OS would. Calibrate with the eval set in `IMPLEMENTATION-PLAN.md` and prefer keeping machine-level sandboxing wherever the deployment allows it.
 - **No escalation to a human** — the classifier only allows or denies. A denial is final for that call; the model adapts (ask/escalate routing to the approval seam is deferred until an interactive full-access deployment needs it).
 - **No decision caching** — repeated calls of the same shape each pay one classifier round trip. A per-turn verdict cache is deferred.
+- **Classifier cutoffs still deny** — a stream that ends with `max-tokens` is parsed if the verdict lines are complete, but a cutoff before a verdict denies (fail closed). The classifier defaults to `reasoningEffort: off` so verdicts are short and the 1024-token cap is rarely reached; deployments that raise the effort should raise `maxOutputTokens` too.
 - **No custom session events** — the harness defers a registration surface for out-of-repo plugin event types, so decision metadata lives in host logs only; post-hoc review uses log correlation, not session replay.
 - **Classifier summaries omit assistant text and tool results** — scope judgment uses the recent human messages and tool calls only, which keeps the input bounded at the cost of less context.

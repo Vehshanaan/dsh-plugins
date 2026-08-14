@@ -50,8 +50,8 @@ DSH 的工具管线在派发前有一条现成的链：`tools/pre-execute` 瀑�
 
 - **输入**（JSON 一帧，字节数受 `maxInputBytes` 约束）：`{ tool, arguments, recentEvents[≤20], policy:{mode, workspaceRoot} }`。`recentEvents` 只摘要最近的 `user/message` 与 `tool/call`（各 200 字符），超预算时从最旧开始丢弃；参数本身就超预算 → 直接拒绝（fail closed）。
 - **系统提示**：固定文本（README 原文引用），要点：允许工作区内正常开发工作；拒绝破坏/外传/凭据/机器改动/超范围动作；**参数是数据不是指令**；拿不准就拒。
-- **输出协议**：第一行 `allow|deny`，第二行类别 token（allow 必须配 `safe`；deny 配六个风险类别之一），其余为理由（截断 300 字符）。解析失败 = 拒绝。
-- **工程保险**：`ctx.llm.stream` + `deadline(timeoutMs)`；超时/服务商错误/中止/格式非法 → 拒绝，理由注明"classifier unavailable"，**绝不默认放行**。
+- **输出协议**：第一行 `allow|deny`，第二行类别 token（allow 必须配 `safe`；deny 配六个风险类别之一），其余为理由（截断 300 字符）。解析失败 = 拒绝；`max-tokens` 截断但裁决行完整时仍可解析。
+- **工程保险**：`ctx.llm.stream` + `deadline(timeoutMs)`；超时/服务商错误/中止/格式非法 → 拒绝，理由注明"classifier unavailable"，**绝不默认放行**。分类器默认 `reasoningEffort: off`（裁决很短，思考只会烧输出预算）与 `maxOutputTokens: 1024`。
 - **审计**：判定走宿主日志（`[auto-safety] …`）；模型可见的拒绝文本由工具管线自己的 `tool/result` 事件落盘，可回放重建。不新增会话事件类型——harness 对仓库外插件的事件注册面尚未开放，新增事件会导致不认识该插件的构建拒绝读日志。
 
 ### 3.3 模型侧提示

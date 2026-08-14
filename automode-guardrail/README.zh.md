@@ -21,8 +21,8 @@ config:
     provider: deepseek-official   # 已注册的 LLM 服务商路由
     model: deepseek-v4-flash      # 具体模型 id
     maxInputBytes: 12000          # 分类输入的最大 UTF-8 字节数
-    maxOutputTokens: 200          # 分类输出 token 上限
-    timeoutMs: 5000               # 单次分类的总时限（毫秒）
+    maxOutputTokens: 1024         # 分类输出 token 上限
+    reasoningEffort: off          # 思考强度；off 让裁决更快（默认）
 ```
 
 配置错误在加载时立即报错：未知模式、空的 `skip` 条目、非法的分类器预算、配置了分类器但没有 LLM 服务，都会抛出异常。硬规则表和固定只读集合是安全不变量——不可配置。
@@ -87,5 +87,6 @@ Auto-safety guardrail active: this session runs with unrestricted file access, a
 - **是策略控制，不是安全边界**——误放行即真实执行；分类器挡不住操作系统层面能做的事。上线前先用 `IMPLEMENTATION-PLAN.md` 中的评测集标定误放行率，部署环境允许时尽量保留机器级沙箱。
 - **没有人工升级通道**——分类器只允许或拒绝，拒绝即该调用终结，由模型自行改道（转交审批 seam 的人工升级留待交互式 full-access 部署需要时再做）。
 - **没有判定缓存**——同形重复调用每次都付一次分类器往返，per-turn 判定缓存留待后续。
+- **截断仍可能拒绝**——`max-tokens` 结束的流如果裁决行完整会正常解析；裁决生成前被截断则拒绝（fail closed）。分类器默认 `reasoningEffort: off`，裁决很短、1024 token 上限很少触顶；把强度调高的部署应同步调大 `maxOutputTokens`。
 - **不新增会话事件**——harness 尚未给仓库外插件开放事件类型注册面，判定元数据只进宿主日志，事后复核靠日志关联而非会话回放。
 - **分类摘要不含助手文本与工具结果**——范围判断只用最近的人类消息与工具调用，输入有界但上下文更少。
