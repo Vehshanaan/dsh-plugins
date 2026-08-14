@@ -1,3 +1,22 @@
+# Auto-safety guardrail patch: screens tool calls while a session runs in an
+# armed sandbox mode (default danger-full-access). Build first:
+#   corepack pnpm install && corepack pnpm run build   (inside dsh-plugins)
 - insert:
     - id: automode-guardrail
-      name: '<checkout>/automode-guardrail/src/index.ts'
+      name: '<checkout>/automode-guardrail/dist/index.js'
+      config:
+        modes: ['danger-full-access']
+        skip: []
+        classifier:
+          provider: deepseek-official
+          model: deepseek-v4-flash
+          maxInputBytes: 12000
+          maxOutputTokens: 200
+          timeoutMs: 5000
+
+# /btw side questions: ask a question that never enters the conversation
+# history. Resolves @deepseek-ai/* from dsh-plugins/node_modules (junction to
+# the profile dependency tree).
+- insert:
+    - id: btw
+      name: 'file:///<checkout>/btw/dist/index.js'

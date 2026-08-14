@@ -1,0 +1,10 @@
+{
+  "name": "dsh-plugins-root",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "corepack pnpm --dir automode-guardrail run build",
+    "test": "corepack pnpm --dir automode-guardrail run test",
+    "typecheck": "corepack pnpm --dir automode-guardrail run typecheck"
+  }
+}
