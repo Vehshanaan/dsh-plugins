@@ -1,26 +1,49 @@
 # dsh-plugins
 
-Plugin collection for this `deepseek-harness` checkout. It lives inside the checkout root so plugin sessions keep the harness `AGENTS.md` conventions and dsh skills, but it is an independent git repo; the parent repo never tracks it (see the parent's `.git/info/exclude`).
+[DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness) 的 Claude Code 风格命令与安全插件集。所有插件都是标准的 Cordis 插件：构建为 ESM bundle，通过 profile patch 挂载，运行时与 dsh 共享同一套依赖。
 
-## Load
+## 插件
 
-Plugins load through `cordis.yml` patches with absolute paths. Build the guardrail first, then run the Web UI from the checkout root:
+| 插件 | 功能 | 命令 |
+|---|---|---|
+| [`btw/`](btw/README.md) | **旁路提问**：主任务进行中顺手问一个问题，回答不进主对话历史、不影响后续正式对话（由独立子会话回答，默认无工具） | `/btw <问题>` |
+| [`vscode/`](vscode/README.md) | **在 VS Code 中打开工作区**：打开当前会话工作目录或工作区内子路径/文件，不经过模型 | `/vscode [相对路径]` |
+| [`automode-guardrail/`](automode-guardrail/README.md) | **工具调用安全闸**：全访问会话（`danger-full-access`）中，硬规则 + 可选 LLM 分类器在工具执行前拦截不可逆灾难操作 | —（自动生效） |
+
+## 快速开始
+
+前置：已安装 dsh（任意安装方式）并成功启动过一次 `dsh web`；Node.js ≥ 22.19（建议 24）。
 
 ```sh
-corepack pnpm install      # in dsh-plugins/ (dev deps + peers)
-corepack pnpm run build    # in dsh-plugins/automode-guardrail → dist/
-pnpm dsh web --patch ./dsh-plugins/cordis.yml
+git clone <本仓库> dsh-plugins
+cd dsh-plugins
+corepack pnpm install        # 安装依赖（含各插件 devDeps 与 @deepseek-ai/* peer 依赖）
+corepack pnpm -r run build   # 构建全部插件 → dist/
 ```
 
-The npm/npx launcher works unchanged — the patch points at the built `dist/index.js`, and the plugin resolves its harness imports from the profile's own dependency tree.
+然后按 [SETUP.md](SETUP.md) §3 把插件挂载进 `$DSH_HOME/profiles/web/cordis.patch.yml`（把 `<checkout>` 替换为仓库实际路径），启动：
 
-## Plugins
+```sh
+dsh web
+```
 
-- `automode-guardrail/` — automatic instruction-safety guardrail for full-access sessions, in the spirit of Claude Code's auto mode: hard-rule guard plus an optional LLM classifier screening every tool call while the session runs in `danger-full-access` mode. See its [README](automode-guardrail/README.md) and the reviewable [implementation plan](automode-guardrail/IMPLEMENTATION-PLAN.md).
-- `btw/` — Claude Code style `/btw` side questions: ask a question that never enters the main conversation history, answered by a fresh tool-less side subagent. See its [README](btw/README.md).
-- `vscode/` — `/vscode` open-in-editor: open the current workspace (or a relative subpath) in VS Code via the `code` CLI, without a model turn. See its [README](vscode/README.md).
+在会话中试一下 `/btw 你好`。
 
-## TypeScript
+## 文档
 
-Each plugin's `tsconfig.json` maps `@deepseek-ai/*` imports to the checkout's `packages/*/src` via relative `paths`, so editor type-checking, `tsc --noEmit`, and vitest work without building the harness. Runtime resolution is the profile's own tree (peer dependencies), never the repo's. btw/ 例外：@deepseek-ai/* 通过 
-ode_modules/@deepseek-ai junction 解析到 $DSH_HOME/profiles/node_modules（与运行中的 dsh 安装版共享同一套依赖），类型检查亦然。
+- [SETUP.md](SETUP.md) — 跨机器接入总纲：依赖解析、构建、挂载、路径替换、应急关闭、故障排查
+- [ADDING-A-PLUGIN.md](ADDING-A-PLUGIN.md) — 新插件开发指南（骨架、模式、测试、挂载）
+- 各插件 README — 语义、配置、模型体验说明
+
+## 开发
+
+```sh
+corepack pnpm -r run typecheck   # 全部插件类型检查
+corepack pnpm -r run test        # 全部插件测试（vitest，mock 模型，无需 API key）
+```
+
+测试为真实插件 + mock LLM 的组合测试：验证命令注册、会话日志语义（如 `/btw` 主会话零污染）与失败路径。
+
+## 许可
+
+[MIT](LICENSE)

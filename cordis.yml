@@ -1,11 +1,8 @@
-# MIGRATED: the live mount moved to $DSH_HOME/profiles/web/cordis.patch.yml
-# (plain `dsh web` now loads these plugins — no --patch needed). This file is
-# kept as the source reference for plugin configuration; edit BOTH places when
-# changing plugin config, and rebuild the plugin's dist/ first.
-#
-# Auto-safety guardrail patch: screens tool calls while a session runs in an
-# armed sandbox mode (default danger-full-access). Build first:
-#   corepack pnpm install && corepack pnpm run build   (inside dsh-plugins)
+# 本文件是挂载配置的源参考：运行时挂载在 $DSH_HOME/profiles/web/cordis.patch.yml
+# （`dsh web` 零参数加载）。改插件配置时两处需同步；改插件代码后先重建 dist/。
+# 路径中的绝对前缀是作者机器的 checkout 路径，换机器时替换（见 SETUP.md §3）。
+# 构建：corepack pnpm install && corepack pnpm -r run build（仓库根目录）。
+'
 - insert:
     - id: automode-guardrail
       name: 'file:///<checkout>/automode-guardrail/dist/index.js'
@@ -20,9 +17,7 @@
           reasoningEffort: off
           timeoutMs: 5000
 
-# /btw side questions: ask a question that never enters the conversation
-# history. Resolves @deepseek-ai/* from dsh-plugins/node_modules (junction to
-# the profile dependency tree).
+# /btw 旁路提问：问题与回答不进主对话历史。
 - insert:
     - id: btw
       name: 'file:///<checkout>/btw/dist/index.js'

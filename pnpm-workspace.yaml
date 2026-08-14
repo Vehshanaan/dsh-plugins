@@ -1,5 +1,7 @@
 packages:
   - automode-guardrail
+  - btw
+  - vscode
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
@@ -25,3 +27,7 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-tools@0.1.0-rc.6'
   - '@deepseek-ai/dsh-typert-protocol@0.1.0-rc.6'
   - '@deepseek-ai/dsh-user-approval@0.1.0-rc.6'
+  - '@deepseek-ai/dsh-commands@0.1.0-rc.6'
+  - '@deepseek-ai/dsh-subagent@0.1.0-rc.6'
+  - '@deepseek-ai/dsh-subagent-in-process-driver@0.1.0-rc.6'
+  - '@deepseek-ai/dsh-subagent-spawn-in-process@0.1.0-rc.6'

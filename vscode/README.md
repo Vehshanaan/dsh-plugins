@@ -1,5 +1,7 @@
 # dsh-vscode — `/vscode` 在 VS Code 中打开工作区
 
+> 挂载：按 [SETUP.md](../SETUP.md) §3 写入 profile patch；`<checkout>` 为仓库路径占位符。
+
 主对话中输入 `/vscode` 在 VS Code 中打开当前会话的工作目录；`/vscode <相对路径>` 打开工作区内的子路径或文件。命令在宿主侧直接执行，**不经过模型**，主会话只留下两条 log-only 生命周期事件。
 
 ## 用法
@@ -31,7 +33,7 @@
 ```yaml
 - insert:
     - id: vscode
-      name: '.../dsh-plugins/vscode/dist/index.js'
+      name: 'file:///<checkout>/vscode/dist/index.js'
       config:
         command: code
         args: ['--reuse-window']
@@ -45,4 +47,4 @@ npx tsc --noEmit -p tsconfig.json
 npx vitest run
 ```
 
-依赖解析同 `btw/`：`@deepseek-ai/*` 经 `dsh-plugins/node_modules/@deepseek-ai` junction 指向 `$DSH_HOME/profiles/node_modules`。
+依赖解析同 `btw/`：workspace 内由 `corepack pnpm install` 链接 peer 依赖（见 [SETUP.md](../SETUP.md) §2）。

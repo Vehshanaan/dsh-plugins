@@ -31,12 +31,12 @@
 | `agentOptions` | — | 可选子会话 LLM 路由 `{ provider, model, maxTokens }` |
 | `maxOutputChars` | `8000` | 回答长度上限，超出截断并标记 |
 
-例（`dsh-plugins/cordis.yml` 或用户 patch 覆盖）：
+例（`$DSH_HOME/profiles/web/cordis.patch.yml`；`<checkout>` 为仓库路径，见 [SETUP.md](../SETUP.md) §3）：
 
 ```yaml
 - insert:
     - id: btw
-      name: '.../dsh-plugins/btw/dist/index.js'
+      name: 'file:///<checkout>/btw/dist/index.js'
       config:
         maxOutputChars: 4000
 ```
@@ -51,4 +51,4 @@ npx vitest run
 
 ## 依赖解析
 
-插件 bundle 对 `@deepseek-ai/*` 保持 external，运行时从插件文件位置向上解析。`dsh-plugins/node_modules/@deepseek-ai` 是指向 `$DSH_HOME/profiles/node_modules/@deepseek-ai` 的 junction，因此插件与运行中的 dsh（安装版）共享同一套依赖；类型检查也解析到同一套 `.d.ts`，无版本漂移。
+插件 bundle 对 `@deepseek-ai/*` 保持 external，运行时从插件位置向上解析 `node_modules`。workspace 中由 `corepack pnpm install` 为每个插件链接其声明的 peer 依赖，与运行中的 dsh 共享同一版本实例；如需与 `$DSH_HOME` 当前依赖树强一致（如 npx 缓存运行的 dsh），见 [SETUP.md](../SETUP.md) §2.2 的链接方案。

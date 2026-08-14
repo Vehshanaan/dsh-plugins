@@ -1,10 +1,12 @@
 {
-  "name": "dsh-plugins-root",
+  "name": "dsh-plugins",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
+  "description": "Claude Code style command and safety plugins for DeepSeek Harness (dsh)",
   "scripts": {
-    "build": "corepack pnpm --dir automode-guardrail run build",
-    "test": "corepack pnpm --dir automode-guardrail run test",
-    "typecheck": "corepack pnpm --dir automode-guardrail run typecheck"
+    "build": "corepack pnpm -r run build",
+    "test": "corepack pnpm -r run test",
+    "typecheck": "corepack pnpm -r run typecheck"
   }
 }

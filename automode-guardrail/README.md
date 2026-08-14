@@ -1,97 +1,98 @@
 # automode-guardrail
 
-English | [中文](README.zh.md)
+[English](README.md) | 中文
 
-Automatic instruction-safety guardrail for full-access sessions: when a session runs in an armed sandbox mode (default `danger-full-access`, where the file sandbox restricts nothing), every tool call is screened before execution. The plugin is a policy control, not a security boundary — a false `allow` executes the call.
+全自动模式（full-access）下的指令安全护栏：当会话处于"武装"沙箱模式（默认 `danger-full-access`，即文件沙箱不限制任何修改）时，每一次工具调用在执行前都要过筛。本插件是策略控制，不是安全边界——一次误放行就意味着调用真的执行了。
 
-Two layers:
+两层防线：
 
-- **Hard rules** — a synchronous, monotonic, deny-only guard (`ctx.tools.guard`) plus a first check in the pre-execute listener matches shell commands (`bash`, `pwsh`) against irreversible-catastrophe signatures: recursive deletes of filesystem roots, the home directory, the workspace root, or a root glob; raw-device writes (`dd of=/dev/…`); `mkfs`; `format <drive>:`; `diskpart clean`; and machine teardown (`shutdown`, `reboot`, `Restart-Computer`, …). Every matcher is anchored to a command position (start or a shell separator), so command text embedded inside a script being written does not hard-deny the write itself. A guard denial cannot be overridden by any `tools/pre-execute` listener.
-- **Workspace-write fast path** — `write`/`edit` calls whose target resolves inside the workspace root and is not a credential/secret file name skip the model entirely (the routine work of a coding agent).
-- **LLM classifier** (optional) — an outermost `tools/pre-execute` listener judges every remaining call against a framed JSON input (tool name, bounded arguments — oversized string fields become a head/tail marker — up to 20 summarized recent human messages and tool calls, and the standing sandbox policy). `allow` delegates; `deny` short-circuits the pipeline with a reason the model receives as the tool error. Any classifier failure — timeout, provider error, invalid reply — denies (fail closed).
+- **硬规则**——一个同步、单调、只可否决的守卫（`ctx.tools.guard`）对 shell 命令（`bash`、`pwsh`）做不可逆灾难特征匹配：递归删除文件系统根、用户主目录、工作区根或根级通配符；写裸设备（`dd of=/dev/…`）；`mkfs`；`format <盘符>:`；`diskpart clean`；以及关机/重启类机器停机操作。守卫的否决无法被任何 `tools/pre-execute` 监听器推翻。
+- **LLM 分类器**（可选）——一个最外层的 `tools/pre-execute` 监听器，把其余每次调用连同构造好的 JSON 输入（工具名、完整参数、最近最多 20 条摘要化的人类消息与工具调用、当前沙箱政策）交给分类模型裁决。`allow` 放行；`deny` 直接截断管线，把理由作为工具错误返回给模型。分类器任何故障——超时、服务商报错、输出格式非法——一律拒绝（fail closed，绝不默认放行）。
 
-The fixed read-only tool set (`read`, `glob`, `grep`, `read_image`, `job_output`, `job_list`, `todo_write`, `get_goal`, `list_agents`, `skill`, `ask_user_question`, `exit_plan_mode`) skips classification; the hard rules still apply. `skip` extends the set.
+固定的只读工具集合（`read`、`glob`、`grep`、`read_image`、`job_output`、`job_list`、`todo_write`、`get_goal`、`list_agents`、`skill`、`ask_user_question`、`exit_plan_mode`）跳过分类，但硬规则依然生效；`skip` 可追加豁免名单。
 
-## Config
+## 配置
 
 ```yaml
 config:
-  modes: ['danger-full-access']   # sandbox modes that arm the guardrail
-  skip: []                        # extra read-only tool names
-  workspaceWriteFastPath: true    # skip the model for in-workspace non-sensitive writes
-  classifier:                     # omit for the rules-only mode
-    provider: deepseek-official   # registered LLM provider route
-    model: deepseek-v4-flash      # exact model id
-    maxInputBytes: 12000          # UTF-8 bytes of the framed input
-    maxOutputTokens: 1024         # auxiliary output-token cap
-    reasoningEffort: off          # thinking effort; off keeps verdicts fast (default)
-    maxArgumentFieldChars: 2000   # per-field string cap; larger fields become head/tail markers
+  modes: ['danger-full-access']   # 武装护栏的沙箱模式
+  skip: []                        # 额外豁免分类的只读工具名
+  workspaceWriteFastPath: true    # 工作区内非敏感写操作跳过模型判定
+  classifier:                     # 省略则只跑硬规则模式
+    provider: deepseek-official   # 已注册的 LLM 服务商路由
+    model: deepseek-v4-flash      # 具体模型 id
+    maxInputBytes: 12000          # 分类输入的最大 UTF-8 字节数
+    maxOutputTokens: 1024         # 分类输出 token 上限
+    reasoningEffort: off          # 思考强度；off 让裁决更快（默认）
+    maxArgumentFieldChars: 2000   # 单字段字符串上限；超限字段变成头尾标记
 ```
 
-Misconfiguration fails loud at load: unknown modes, empty `skip` entries, invalid classifier budgets, or a configured classifier without a composed LLM service all throw. The hard-rule table and the fixed skip set are security invariants — not configurable.
+配置错误在加载时立即报错：未知模式、空的 `skip` 条目、非法的分类器预算、配置了分类器但没有 LLM 服务，都会抛出异常。硬规则表和固定只读集合是安全不变量——不可配置。
 
-## Denial text
+## 拒绝文本
 
-A denial reaches the model as the tool error:
+被拒的调用会以工具错误的形式呈给模型：
 
 ```
 Error: auto-safety guardrail denied bash (destructive): recursive delete (rm with -r and -f) targeting a filesystem root, the home directory, the workspace root, or a root glob
 ```
 
-Decision metadata (rule id, verdict category, classifier route and input size) is written to the host logger. The plugin appends no session event types of its own, so harness builds that do not know this plugin still read the session logs; the model-visible denial text is already reconstructable from the ordinary `tool/result` event the tools pipeline writes.
+判定元数据（规则 id、裁决类别、分类器路由与输入大小）写入宿主日志。本插件不新增任何会话事件类型，因此不认识该插件的 harness 版本仍能正常读取会话日志；模型可见的拒绝文本已经由工具管线自身的 `tool/result` 事件完整记录，可随时回放重建。
 
-## Loading
+## 加载方式
 
-Build, then point a profile patch at the built entry through a `file://` URL — the loader hands the entry name to `import()`, which rejects bare Windows drive paths (the launcher stays the same):
+插件已挂载在 web profile 的用户层（`$DSH_HOME/profiles/web/cordis.patch.yml`），`dsh web` 直接加载。先构建（见 [SETUP.md](../SETUP.md) §3.3），再启动：
 
 ```sh
-corepack pnpm install && corepack pnpm run build
-dsh --profile web --patch ./dsh-plugins/cordis.yml
+corepack pnpm install && corepack pnpm run build   # 在 dsh-plugins/ 内
+dsh web
 ```
 
-or install the packed package into a profile (`dsh plugin --profile web add ./automode-guardrail-0.1.0.tgz`) and add `automode-guardrail` to the profile patch. Harness packages are peer dependencies: the plugin resolves them from the profile's own tree, so it always shares one instance with the runtime.
+挂载条目以 file:// URL 形式指向构建产物 `dist/index.js`——loader 会把条目名直接交给 import()，Windows 裸盘符路径会被当成协议拒绝。完整的跨机器接入、应急关闭与故障排查见 [SETUP.md](../SETUP.md)。
+
+或把打包产物装进 profile（`dsh plugin --profile web add ./automode-guardrail-0.1.0.tgz`），再在 profile 补丁中加入 `automode-guardrail`。harness 各包以 peerDependencies 声明：插件从 profile 自己的依赖树解析它们，与运行时共享同一份实例。
 
 ## Model Experience
 
-### Request context: guardrail-active notice
+### 请求上下文：护栏激活提示
 
-#### What the model sees
+#### 模型看到什么
 
-While the session's effective sandbox mode is armed, the runtime-context snapshot gains one sentence:
+会话生效沙箱模式处于武装状态时，运行时上下文快照增加一句话：
 
 ```markdown
 Auto-safety guardrail active: this session runs with unrestricted file access, and tool calls are screened before execution. Denied calls return a reason — adapt with a different approach instead of re-issuing the denied call.
 ```
 
-#### Token effect
+#### Token 影响
 
-One fixed sentence per request while armed; zero tokens while unarmed.
+武装期间每次请求固定一句话；未武装时零 token。
 
-#### KV Cache effect
+#### KV Cache 影响
 
-Append-only after retained history; armed/unarmed switches change only this contribution, preserving the stable system prompt prefix.
+仅在保留历史之后追加；武装/解除切换只改变这一段，稳定的系统提示前缀不受影响。
 
-### Tool outcome: denials
+### 工具结果：拒绝
 
-#### What the model sees
+#### 模型看到什么
 
-A denied call returns an `isError` tool result whose message is the denial text above. The classifier reply itself never reaches the model.
+被拒调用返回 `isError` 工具结果，内容即上述拒绝文本。分类器自己的回复永远不会进入模型上下文。
 
-#### Token effect
+#### Token 影响
 
-One error message per denied call; allowed calls add no classifier-derived tokens.
+每次被拒调用一条错误消息；放行的调用不产生任何分类器来源的 token。
 
-#### KV Cache effect
+#### KV Cache 影响
 
-Append-only; denials surface as ordinary tool results and do not rewrite earlier request prefixes.
+只追加；拒绝以普通工具结果形式出现，不重写任何先前的请求前缀。
 
-## Known Limitations and Deferred Work
+## 已知限制与后续工作
 
-- **Policy control, not a security boundary** — a false `allow` executes the call; the classifier cannot contain what the OS would. Calibrate with the eval set in `IMPLEMENTATION-PLAN.md` and prefer keeping machine-level sandboxing wherever the deployment allows it.
-- **No escalation to a human** — the classifier only allows or denies. A denial is final for that call; the model adapts (ask/escalate routing to the approval seam is deferred until an interactive full-access deployment needs it).
-- **No decision caching** — repeated calls of the same shape each pay one classifier round trip. A per-turn verdict cache is deferred.
-- **Classifier cutoffs still deny** — a stream that ends with `max-tokens` is parsed if the verdict lines are complete, but a cutoff before a verdict denies (fail closed). The classifier defaults to `reasoningEffort: off` so verdicts are short and the 1024-token cap is rarely reached; deployments that raise the effort should raise `maxOutputTokens` too.
-- **No custom session events** — the harness defers a registration surface for out-of-repo plugin event types, so decision metadata lives in host logs only; post-hoc review uses log correlation, not session replay.
-- **Fast-path symlink caveat** — the in-workspace fast path canonicalizes targets with `realpath` when they exist; a write through a symlink whose target does not exist yet falls back to the lexical path, so a not-yet-created symlinked target could bypass the containment check. The classifier, not the fast path, judges such edge deployments when exact containment matters.
-- **Rule matching is text-based** — anchored command-position patterns keep embedded command examples inside written scripts from hard-denying the write itself, but a command that genuinely begins with a catastrophic signature is denied regardless of intent; rename or restructure such commands (the classifier path) when they are legitimate.
-- **Classifier summaries omit assistant text and tool results** — scope judgment uses the recent human messages and tool calls only, which keeps the input bounded at the cost of less context.
+- **是策略控制，不是安全边界**——误放行即真实执行；分类器挡不住操作系统层面能做的事。上线前先用 `IMPLEMENTATION-PLAN.md` 中的评测集标定误放行率，部署环境允许时尽量保留机器级沙箱。
+- **没有人工升级通道**——分类器只允许或拒绝，拒绝即该调用终结，由模型自行改道（转交审批 seam 的人工升级留待交互式 full-access 部署需要时再做）。
+- **没有判定缓存**——同形重复调用每次都付一次分类器往返，per-turn 判定缓存留待后续。
+- **快路径符号链接边界**——工作区快路径对已存在的目标做 realpath 规范化；通过"目标尚不存在"的符号链接写入时会回退到字面路径，此类边缘部署如需精确包含关系，交由分类器判断而非快路径放行。
+- **规则匹配是文本级的**——锚定到命令起始/分隔符的规则不会因为"被写入的脚本里含有命令示例"而误杀写入本身；但真正以灾难签名开头的命令无论意图如何都会被拒，合法的此类命令请改名/重构后走分类器路径。
+- **截断仍可能拒绝**——`max-tokens` 结束的流如果裁决行完整会正常解析；裁决生成前被截断则拒绝（fail closed）。分类器默认 `reasoningEffort: off`，裁决很短、1024 token 上限很少触顶；把强度调高的部署应同步调大 `maxOutputTokens`。
+- **不新增会话事件**——harness 尚未给仓库外插件开放事件类型注册面，判定元数据只进宿主日志，事后复核靠日志关联而非会话回放。
+- **分类摘要不含助手文本与工具结果**——范围判断只用最近的人类消息与工具调用，输入有界但上下文更少。
