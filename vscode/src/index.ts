@@ -82,7 +82,7 @@ export function resolveTargetPath(cwd: string, rawInput: string): string {
 /**
  * Quote arguments that need it for the Windows cmd shell. cmd splits
  * unquoted arguments on whitespace, so a target like
- * `D:\...\My Project/design notes.md` would otherwise reach the editor as
+ * `C:\Users\alice\My Project\design notes.md` would otherwise reach the editor as
  * several separate paths — VS Code then opens each fragment as its own file.
  * Windows paths cannot contain `"`, so wrapping is safe; other cmd
  * metacharacters inside a quoted argument are inert. Non-Windows spawns pass
