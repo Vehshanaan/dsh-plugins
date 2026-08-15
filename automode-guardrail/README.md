@@ -6,7 +6,7 @@
 
 - **硬规则**——一个同步、单调、只可否决的守卫（`ctx.tools.guard`）对 shell 命令（默认 `bash`、`pwsh`，可用 `shellTools` 扩展检查面）做不可逆灾难特征匹配：递归删除文件系统根、用户主目录、工作区根或根级通配符；写裸设备（`dd of=/dev/…`）；`mkfs`；`format <盘符>:`；`diskpart clean`；以及关机/重启类机器停机操作。守卫的否决无法被任何 `tools/pre-execute` 监听器推翻。
 - **只读命令快路径**（`readOnlyCommandFastPath`）——单条、纯只读的 shell 命令（元数据列举与状态查询：`ls`/`dir`/`pwd`/`whoami`/`git status|log|diff|show`/`Get-ChildItem`/`Test-Path` 等，且不含分隔符、管道、重定向、命令替换或敏感路径引用）也跳过模型判定；硬规则仍在其之前生效。
-- **LLM 分类器**（可选）——一个最外层的 `tools/pre-execute` 监听器，把其余每次调用连同构造好的 JSON 输入（工具名、完整参数、会话的原始用户请求 `task`、最近最多 20 条摘要化的人类消息与工具调用、当前沙箱政策）交给分类模型裁决。`allow` 放行；`deny` 直接截断管线，把理由作为工具错误返回给模型。分类器任何故障——超时、服务商报错、输出格式非法——一律拒绝（fail closed，绝不默认放行）。
+- **LLM 分类器**（可选）——一个最外层的 `tools/pre-execute` 监听器，把其余每次调用连同构造好的 JSON 输入（工具名、完整参数、会话的原始用户请求 `task`、最近最多 20 条摘要化的人类消息与工具调用、当前沙箱政策）交给分类模型裁决。`allow` 放行；`deny` 直接截断管线，把理由作为工具错误返回给模型。分类器任何故障——超时、服务商报错、输出格式非法——一律拒绝（fail closed，绝不默认放行）。模型若把裁决完全写在 reasoning 通道（文本通道为空，v4-flash 偶发），插件会回退解析 reasoning 文本。
 
 固定的只读工具集合（`read`、`glob`、`grep`、`read_image`、`job_output`、`job_list`、`todo_write`、`get_goal`、`list_agents`、`skill`、`ask_user_question`、`exit_plan_mode`）跳过分类，但硬规则依然生效；`skip` 可追加豁免名单。
 

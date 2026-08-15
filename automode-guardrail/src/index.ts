@@ -682,15 +682,27 @@ async function classifyCall(
     if (finish.kind === 'error' || finish.kind === 'aborted') {
       throw new Error(`classifier stream ended with ${finish.failure.message}`)
     }
-    const text = assembler.blocks()
+    const blocks = assembler.blocks()
+    const text = blocks
       .filter(block => block.type === 'text')
       .map(block => block.text)
       .join('\n')
-    const verdict = parseVerdict(text)
+    // v4-flash occasionally answers entirely in the reasoning channel, leaving
+    // the text channel empty; fall back to the reasoning text in that case.
+    const reasoning = blocks
+      .filter(block => block.type === 'reasoning')
+      .map(block => block.text)
+      .join('\n')
+    const verdict = parseVerdict(text) ?? parseVerdict(reasoning)
     if (verdict === undefined) {
       // The verdict lines come first, so a max-tokens cutoff usually still
       // yields a parseable reply; only a genuinely incomplete stream fails.
       const cause = finish.kind === 'max-tokens' ? 'the output token cap was reached before a complete verdict' : finish.kind
+      logger.warn(
+        '[auto-safety] classifier reply unparseable (finish=%s, blocks=%s)',
+        finish.kind,
+        blocks.map(block => block.type).join(',') || 'none',
+      )
       throw new Error(`classifier produced an invalid verdict (${cause})`)
     }
     return verdict

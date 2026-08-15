@@ -15,7 +15,7 @@ export function textResponse(text: string): StreamChunk[] {
   ]
 }
 
-/** Like {@link textResponse} but the stream ends with a `max-tokens` finish — the model was cut off at the output ceiling. */
+/** Like {@link maxTokensResponse} but the stream ends with a `max-tokens` finish — the model was cut off at the output ceiling. */
 export function maxTokensResponse(text: string): StreamChunk[] {
   return [
     { type: 'block-start', index: 0, blockType: 'text' },
@@ -23,6 +23,17 @@ export function maxTokensResponse(text: string): StreamChunk[] {
     { type: 'block-end', index: 0, block: { type: 'text', text } },
     { type: 'usage', usage: { inputTokens: 10, outputTokens: text.length } },
     { type: 'finish', reason: { kind: 'max-tokens' } },
+  ]
+}
+
+/** Like {@link textResponse} but the whole reply rides in the reasoning channel — v4-flash sometimes answers with empty text content. */
+export function reasoningResponse(text: string): StreamChunk[] {
+  return [
+    { type: 'block-start', index: 0, blockType: 'reasoning' },
+    ...Array.from(text, (char): StreamChunk => ({ type: 'reasoning-delta', index: 0, text: char })),
+    { type: 'block-end', index: 0, block: { type: 'reasoning', text } },
+    { type: 'usage', usage: { inputTokens: 10, outputTokens: text.length } },
+    { type: 'finish', reason: { kind: 'stop' } },
   ]
 }
 
