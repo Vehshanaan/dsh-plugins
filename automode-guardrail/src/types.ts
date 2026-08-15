@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Pure types of the auto-safety guardrail — no runtime code.
  * @module automode-guardrail/types
  */
@@ -21,6 +21,26 @@ export interface ClassifierConfig {
   maxArgumentFieldChars?: number
   /** End-to-end classification deadline in milliseconds (default 5000). */
   timeoutMs?: number
+  /**
+   * Retries after a transient classifier failure — unparseable reply,
+   * deadline, or provider error. Each attempt gets a fresh deadline; the
+   * caller's abort is never retried (default 1, range 0-3).
+   */
+  retries?: number
+}
+
+/** One deterministic policy rule: a pattern evaluated before the classifier. */
+export interface PolicyRuleConfig {
+  /**
+   * Regular expression matched case-insensitively against the normalized
+   * shell command for `shellTools`, and against the bare tool name for every
+   * other tool.
+   */
+  match: string
+  /** Model-visible denial reason (deny rules; defaults to the match text). */
+  reason?: string
+  /** Restrict the rule to these tool names; omitted applies to every tool. */
+  tools?: string[]
 }
 
 /** Plugin config, validated by the `Config` schemastery schema plus the fail-loud checks in `apply`. */
@@ -50,6 +70,18 @@ export interface GuardrailConfig {
   readOnlyCommandFastPath?: boolean
   /** LLM classifier; omitted runs the rules-only mode. */
   classifier?: ClassifierConfig
+  /**
+   * Deterministic deny rules evaluated after the hard rules and before the
+   * classifier; a hit denies with the rule's reason. User-owned policy — can
+   * never override the hard rules.
+   */
+  denyRules?: PolicyRuleConfig[]
+  /**
+   * Deterministic allow rules evaluated after the hard rules and before the
+   * classifier; a hit skips classification. User-owned policy — can never
+   * override the hard rules.
+   */
+  allowRules?: PolicyRuleConfig[]
 }
 
 /** Config after validation and defaulting — every optional field materialized. */
@@ -62,6 +94,18 @@ export interface ResolvedClassifierConfig {
   /** Per-field string cap applied to the framed arguments. */
   maxArgumentFieldChars: number
   timeoutMs: number
+  /** Transient-failure retries; each attempt gets a fresh deadline. */
+  retries: number
+}
+
+/** One compiled policy rule, validated and materialized by `resolveConfig`. */
+export interface ResolvedPolicyRule {
+  /** Compiled case-insensitive pattern. */
+  regex: RegExp
+  /** Model-visible denial reason; defaults to the match text. */
+  reason: string
+  /** Tool names the rule applies to; an empty set applies to every tool. */
+  tools: ReadonlySet<string>
 }
 
 /** Validated plugin config used by `apply`. */
@@ -74,6 +118,8 @@ export interface ResolvedConfig {
   workspaceWriteFastPath: boolean
   readOnlyCommandFastPath: boolean
   classifier?: ResolvedClassifierConfig
+  denyRules: readonly ResolvedPolicyRule[]
+  allowRules: readonly ResolvedPolicyRule[]
 }
 
 /** Verdict decision produced by the classifier. */

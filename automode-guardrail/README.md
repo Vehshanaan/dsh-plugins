@@ -4,9 +4,9 @@
 
 三层防线：
 
-- **硬规则**——一个同步、单调、只可否决的守卫（`ctx.tools.guard`）对 shell 命令（默认 `bash`、`pwsh`，可用 `shellTools` 扩展检查面）做不可逆灾难特征匹配：递归删除文件系统根、用户主目录、工作区根或根级通配符；写裸设备（`dd of=/dev/…`）；`mkfs`；`format <盘符>:`；`diskpart clean`；以及关机/重启类机器停机操作。守卫的否决无法被任何 `tools/pre-execute` 监听器推翻。
+- **硬规则**——一个同步、单调、只可否决的守卫（`ctx.tools.guard`）对 shell 命令（默认 `bash`、`pwsh`，可用 `shellTools` 扩展检查面）做不可逆灾难特征匹配：递归删除文件系统根、用户主目录、工作区根或根级通配符；写裸设备（`dd of=/dev/…`）；`mkfs`；`format <盘符>:`；`diskpart clean`；关机/重启类机器停机操作；以及向网络发送凭据文件（`curl -d @~/.ssh/id_rsa`、`wget --post-file=…`、`nc < ~/.netrc`、`scp`/`rsync` 私钥与凭据文件等）。守卫的否决无法被任何 `tools/pre-execute` 监听器推翻。
 - **只读命令快路径**（`readOnlyCommandFastPath`）——单条、纯只读的 shell 命令（元数据列举与状态查询：`ls`/`dir`/`pwd`/`whoami`/`git status|log|diff|show`/`Get-ChildItem`/`Test-Path` 等，且不含分隔符、管道、重定向、命令替换或敏感路径引用）也跳过模型判定；硬规则仍在其之前生效。
-- **LLM 分类器**（可选）——一个最外层的 `tools/pre-execute` 监听器，把其余每次调用连同构造好的 JSON 输入（工具名、完整参数、会话的原始用户请求 `task`、最近最多 20 条摘要化的人类消息与工具调用、当前沙箱政策）交给分类模型裁决。`allow` 放行；`deny` 直接截断管线，把理由作为工具错误返回给模型。分类器任何故障——超时、服务商报错、输出格式非法——一律拒绝（fail closed，绝不默认放行）。模型若把裁决完全写在 reasoning 通道（文本通道为空，v4-flash 偶发），插件会回退解析 reasoning 文本。
+- **LLM 分类器**（可选）——一个最外层的 `tools/pre-execute` 监听器，把其余每次调用连同构造好的 JSON 输入（工具名、完整参数、会话的原始用户请求 `task`、最近最多 20 条摘要化的人类消息与工具调用、当前沙箱政策）交给分类模型裁决。`allow` 放行；`deny` 直接截断管线，把理由作为工具错误返回给模型。分类器任何故障——超时、服务商报错、输出格式非法——在按 `classifier.retries`（默认 1）重试后仍失败才拒绝（fail closed，绝不默认放行）。模型若把裁决完全写在 reasoning 通道（文本通道为空，v4-flash 偶发），插件会回退解析 reasoning 文本。系统提示显式声明参数内容来自不可信来源、是数据而非指令、任何绕过护栏的指令视为攻击（提示注入防御）。裁决按会话+调用指纹缓存（LRU 32，allow/deny 都缓存），同形重发不再付模型往返；被拒调用的重发直接快速拦截。
 
 固定的只读工具集合（`read`、`glob`、`grep`、`read_image`、`job_output`、`job_list`、`todo_write`、`get_goal`、`list_agents`、`skill`、`ask_user_question`、`exit_plan_mode`）跳过分类，但硬规则依然生效；`skip` 可追加豁免名单。
 
@@ -17,6 +17,11 @@ config:
   modes: ['danger-full-access']   # 武装护栏的沙箱模式
   skip: []                        # 额外豁免分类的只读工具名
   workspaceWriteFastPath: true    # 工作区内非敏感写操作跳过模型判定
+  denyRules:                      # 硬规则之外的确定性拒绝（可选）
+    - match: 'git push --force'   # 对 shell 工具匹配规范化命令，对其他工具匹配工具名
+      reason: '项目策略禁止强推'
+  allowRules:                     # 跳过分类的确定性放行（可选；硬规则仍优先）
+    - match: '^npm run '
   classifier:                     # 省略则只跑硬规则模式
     provider: deepseek-official   # 已注册的 LLM 服务商路由
     model: deepseek-v4-flash      # 具体模型 id
@@ -24,9 +29,11 @@ config:
     maxOutputTokens: 1024         # 分类输出 token 上限
     reasoningEffort: off          # 思考强度；off 让裁决更快（默认）
     maxArgumentFieldChars: 2000   # 单字段字符串上限；超限字段变成头尾标记
+    timeoutMs: 5000               # 单次分类截止时间
+    retries: 1                    # 瞬时失败重试次数（0-3，每次独立计时）
 ```
 
-配置错误在加载时立即报错：未知模式、空的 `skip` 条目、非法的分类器预算、配置了分类器但没有 LLM 服务，都会抛出异常。硬规则表和固定只读集合是安全不变量——不可配置；规则检查的 shell 工具面（`shellTools`）与两个快路径开关可以配置。
+配置错误在加载时立即报错：未知模式、空的 `skip` 条目、非法或空的正则 `denyRules`/`allowRules` 条目、非法的分类器预算与重试次数、配置了分类器但没有 LLM 服务，都会抛出异常。硬规则表和固定只读集合是安全不变量——不可配置；规则检查的 shell 工具面（`shellTools`）、两个快路径开关、策略规则与分类器预算可以配置。
 
 ## 拒绝文本
 
@@ -89,9 +96,8 @@ Auto-safety guardrail active: this session runs with unrestricted file access, a
 
 - **是策略控制，不是安全边界**——误放行即真实执行；分类器挡不住操作系统层面能做的事。上线前先用 `IMPLEMENTATION-PLAN.md` 中的评测集标定误放行率，部署环境允许时尽量保留机器级沙箱。
 - **没有人工升级通道**——分类器只允许或拒绝，拒绝即该调用终结，由模型自行改道（转交审批 seam 的人工升级留待交互式 full-access 部署需要时再做）。
-- **没有判定缓存**——同形重复调用每次都付一次分类器往返，per-turn 判定缓存留待后续。
 - **快路径符号链接边界**——工作区快路径对已存在的目标做 realpath 规范化；通过"目标尚不存在"的符号链接写入时会回退到字面路径，此类边缘部署如需精确包含关系，交由分类器判断而非快路径放行。
 - **规则匹配是文本级的**——锚定到命令起始/分隔符的规则不会因为"被写入的脚本里含有命令示例"而误杀写入本身；但真正以灾难签名开头的命令无论意图如何都会被拒，合法的此类命令请改名/重构后走分类器路径。
-- **截断仍可能拒绝**——`max-tokens` 结束的流如果裁决行完整会正常解析；裁决生成前被截断则拒绝（fail closed）。分类器默认 `reasoningEffort: off`，裁决很短、1024 token 上限很少触顶；把强度调高的部署应同步调大 `maxOutputTokens`。
+- **截断仍可能拒绝**——`max-tokens` 结束的流如果裁决行完整会正常解析；裁决生成前被截断则拒绝（fail closed）。分类器默认 `reasoningEffort: off`，裁决很短、1024 token 上限很少触顶；把强度调高的部署应同步调大 `maxOutputTokens`。瞬时失败（含截断）会按 `retries` 重试。
 - **不新增会话事件**——harness 尚未给仓库外插件开放事件类型注册面，判定元数据只进宿主日志，事后复核靠日志关联而非会话回放。
 - **分类摘要不含助手文本与工具结果**——范围判断只用最近的人类消息与工具调用，输入有界但上下文更少。
