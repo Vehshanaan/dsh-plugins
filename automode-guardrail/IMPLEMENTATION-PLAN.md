@@ -93,7 +93,7 @@ README.md / README.zh.md  用户文档
 6. 配置了分类器但无 LLM 服务 → 加载即抛错；
 7. 只读命令快路径：纯元数据/状态命令零分类请求；分隔符、管道、重定向、内容读取、非白名单动词、敏感路径引用一律走分类；开关可关；
 8. shellTools：默认 bash/pwsh；换成 ['sh'] 后 bash 不再被规则检查、sh 被检查；
-9. 分类器帧携带会话原始用户请求（	ask）：先有用户消息的会话在分类请求中可见该消息。
+9. 分类器帧携带会话原始用户请求（task 字段）：先有用户消息的会话在分类请求中可见该消息。
 
 跑法：`corepack pnpm install && corepack pnpm run typecheck && corepack pnpm run test && corepack pnpm run build`。
 

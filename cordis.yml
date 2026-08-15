@@ -1,6 +1,6 @@
-# 本文件是挂载配置的源参考：运行时挂载在 $DSH_HOME/profiles/web/cordis.patch.yml
+# 挂载配置源参考（可移植模板）：运行时挂载在 $DSH_HOME/profiles/web/cordis.patch.yml
 # （`dsh web` 零参数加载）。改插件配置时两处需同步；改插件代码后先重建 dist/。
-# 路径中的绝对前缀是作者机器的 checkout 路径，换机器时替换（见 SETUP.md §3）。
+# `<checkout>` 是本仓库的实际路径占位符，换机器时替换（见 SETUP.md §3）。
 # 构建：corepack pnpm install && corepack pnpm -r run build（仓库根目录）。
 '
 - insert:

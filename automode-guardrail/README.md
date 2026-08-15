@@ -1,7 +1,5 @@
 # automode-guardrail
 
-[English](README.md) | 中文
-
 全自动模式（full-access）下的指令安全护栏：当会话处于"武装"沙箱模式（默认 `danger-full-access`，即文件沙箱不限制任何修改）时，每一次工具调用在执行前都要过筛。本插件是策略控制，不是安全边界——一次误放行就意味着调用真的执行了。
 
 三层防线：
@@ -42,7 +40,7 @@ Error: auto-safety guardrail denied bash (destructive): recursive delete (rm wit
 
 ## 加载方式
 
-插件已挂载在 web profile 的用户层（`$DSH_HOME/profiles/web/cordis.patch.yml`），`dsh web` 直接加载。先构建（见 [SETUP.md](../SETUP.md) §3.3），再启动：
+推荐挂载到 web profile 的用户层（`$DSH_HOME/profiles/web/cordis.patch.yml`），`dsh web` 直接加载。先构建（见 [SETUP.md](../SETUP.md) §2.1），再启动：
 
 ```sh
 corepack pnpm install && corepack pnpm run build   # 在 dsh-plugins/ 内
