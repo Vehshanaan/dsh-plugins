@@ -2,6 +2,11 @@
   "name": "dsh-btw",
   "description": "/btw side questions: ask a question that never enters the main conversation history",
   "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Vehshanaan/dsh-plugins.git"
+  },
   "private": true,
   "type": "module",
   "main": "dist/index.js",
