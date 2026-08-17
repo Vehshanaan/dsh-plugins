@@ -26,3 +26,16 @@
 - insert:
     - id: vscode
       name: 'file:///<checkout>/vscode/dist/index.js'
+
+# /memory 跨会话记忆（全局/项目分层、自动提取）。
+- insert:
+    - id: memory
+      name: 'file:///<checkout>/memory/dist/index.js'
+      config:
+        autoExtract:
+          provider: deepseek-official
+          model: deepseek-v4-flash
+          maxTokens: 1024
+          maxInputChars: 12000
+          minIntervalMs: 600000
+          perTurnMax: 2
